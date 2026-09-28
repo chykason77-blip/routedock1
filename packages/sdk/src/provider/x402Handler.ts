@@ -17,6 +17,7 @@ import { extractPayerAddress } from './payer.js'
 import {
   InMemorySeenTxStore,
   paymentIdempotencyKey,
+  checkSettlementReplay,
   type SeenTxStore,
 } from './SeenTxStore.js'
 
@@ -128,15 +129,29 @@ export function createX402Handler(opts: X402HandlerOptions): RequestHandler {
 
       // Idempotency: a retry of an already-settled payment replays the cached
       // settlement response instead of settling (and billing) a second time.
-      const idempotencyKey = await paymentIdempotencyKey((name) => {
-        const v = req.headers[name.toLowerCase()]
-        return Array.isArray(v) ? v[0] : (v as string | undefined)
-      })
+      // The key is scoped to this route so a payment settled elsewhere can
+      // never replay here, and replays are capped + time-bounded.
+      const idempotencyKey = await paymentIdempotencyKey(
+        (name) => {
+          const v = req.headers[name.toLowerCase()]
+          return Array.isArray(v) ? v[0] : (v as string | undefined)
+        },
+        {
+          method: req.method,
+          path: req.originalUrl.split('?')[0]!,
+          amount: requirements.amount,
+          payTo: requirements.payTo,
+        },
+      )
       if (idempotencyKey) {
-        const cached = await seenTxStore.get(idempotencyKey)
-        if (cached) {
-          if (cached.headers) {
-            for (const [k, val] of Object.entries(cached.headers)) {
+        const replayCheck = await checkSettlementReplay(seenTxStore, idempotencyKey)
+        if (replayCheck.kind === 'spent') {
+          res.status(402).json({ error: 'Payment already used' })
+          return
+        }
+        if (replayCheck.kind === 'replay') {
+          if (replayCheck.record.headers) {
+            for (const [k, val] of Object.entries(replayCheck.record.headers)) {
               res.setHeader(k, val)
             }
           }
@@ -211,7 +226,7 @@ export function createX402Handler(opts: X402HandlerOptions): RequestHandler {
         if (typeof paymentResponse === 'string') {
           headers['X-Payment-Response'] = paymentResponse
         }
-        await seenTxStore.set(idempotencyKey, { txHash, headers })
+        await seenTxStore.set(idempotencyKey, { txHash, headers, createdAt: Date.now() })
       }
 
       if (txHash && opts.onSettled) {

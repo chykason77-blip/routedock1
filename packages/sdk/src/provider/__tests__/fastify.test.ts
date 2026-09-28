@@ -5,6 +5,8 @@ import Fastify from 'fastify'
 import { Keypair } from '@stellar/stellar-sdk'
 import { routedockFastify } from '../fastify.js'
 import type { RouteDockManifest } from '../../types.js'
+import { InMemorySeenTxStore, paymentIdempotencyKey } from '../SeenTxStore.js'
+import { usdcToStroops } from '../../internal/usdc.js'
 
 // Generate fresh keypairs — avoids hardcoding secrets while keeping tests self-contained
 const payeeKeypair = Keypair.random()
@@ -173,6 +175,124 @@ describe('routedockFastify — mpp-session flow', () => {
       assert.equal(body.closeTxHash, null)
     } finally {
       await close()
+    }
+  })
+})
+
+describe('routedockFastify — settlement idempotency', () => {
+  const X402_AMOUNT = String(usdcToStroops('0.001'))
+
+  /** Fastify server with a counted /price route sharing a caller-supplied store. */
+  async function makeCountedServer(seenTxStore: InMemorySeenTxStore) {
+    const fastify = Fastify()
+    let runs = 0
+    await fastify.register(
+      routedockFastify({
+        ...BASE_OPTS,
+        modes: ['x402'],
+        pricing: { x402: '0.001' },
+        seenTxStore,
+      } as Parameters<typeof routedockFastify>[0]),
+    )
+    fastify.get('/price', async () => {
+      runs++
+      return { price: '42' }
+    })
+    await fastify.listen({ port: 0, host: '127.0.0.1' })
+    const address = fastify.server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    return {
+      url: `http://127.0.0.1:${port}`,
+      runs: () => runs,
+      close: () => fastify.close(),
+    }
+  }
+
+  it('replays a fresh settlement and rejects the second replay', async () => {
+    const seenStore = new InMemorySeenTxStore({ warn: false })
+    const server = await makeCountedServer(seenStore)
+    try {
+      const key = await paymentIdempotencyKey(
+        (n) => (n === 'payment-signature' ? 'SIG' : undefined),
+        { method: 'GET', path: '/price', amount: X402_AMOUNT, payTo: payeeKeypair.publicKey() },
+      )
+      assert.ok(key)
+      await seenStore.set(key, {
+        txHash: 'TX',
+        headers: { 'X-Payment-Response': 'cached-response' },
+        createdAt: Date.now(),
+      })
+
+      const first = await fetch(`${server.url}/price`, { headers: { 'payment-signature': 'SIG' } })
+      assert.equal(first.status, 200)
+      assert.equal(first.headers.get('x-payment-response'), 'cached-response')
+      assert.equal(server.runs(), 1)
+
+      const second = await fetch(`${server.url}/price`, { headers: { 'payment-signature': 'SIG' } })
+      assert.equal(second.status, 402)
+      const body = (await second.json()) as { error: string }
+      assert.equal(body.error, 'Payment already used')
+      assert.equal(server.runs(), 1)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects a settlement older than the replay window', async () => {
+    const seenStore = new InMemorySeenTxStore({ warn: false })
+    const server = await makeCountedServer(seenStore)
+    try {
+      const key = await paymentIdempotencyKey(
+        (n) => (n === 'payment-signature' ? 'SIG' : undefined),
+        { method: 'GET', path: '/price', amount: X402_AMOUNT, payTo: payeeKeypair.publicKey() },
+      )
+      assert.ok(key)
+      await seenStore.set(key, { txHash: 'TX', createdAt: Date.now() - 61_000 })
+
+      const res = await fetch(`${server.url}/price`, { headers: { 'payment-signature': 'SIG' } })
+      assert.equal(res.status, 402)
+      assert.equal(server.runs(), 0)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('does not replay a payment settled on a different route against a shared store', async () => {
+    const seenStore = new InMemorySeenTxStore({ warn: false })
+    const fastify = Fastify()
+    let cheapRuns = 0
+    let expensiveRuns = 0
+    await fastify.register(
+      routedockFastify({
+        ...BASE_OPTS,
+        modes: ['x402'],
+        pricing: { x402: '0.001' },
+        seenTxStore: seenStore,
+      } as Parameters<typeof routedockFastify>[0]),
+    )
+    fastify.get('/cheap', async () => { cheapRuns++; return { price: 'cheap' } })
+    fastify.get('/expensive', async () => { expensiveRuns++; return { price: 'expensive' } })
+    await fastify.listen({ port: 0, host: '127.0.0.1' })
+    const address = fastify.server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    const url = `http://127.0.0.1:${port}`
+    try {
+      const cheapKey = await paymentIdempotencyKey(
+        (n) => (n === 'payment-signature' ? 'SIG' : undefined),
+        { method: 'GET', path: '/cheap', amount: X402_AMOUNT, payTo: payeeKeypair.publicKey() },
+      )
+      assert.ok(cheapKey)
+      await seenStore.set(cheapKey, { txHash: 'TX', createdAt: Date.now() })
+
+      const cheapRes = await fetch(`${url}/cheap`, { headers: { 'payment-signature': 'SIG' } })
+      assert.equal(cheapRes.status, 200)
+      assert.equal(cheapRuns, 1)
+
+      const expensiveRes = await fetch(`${url}/expensive`, { headers: { 'payment-signature': 'SIG' } })
+      assert.notEqual(expensiveRes.status, 200)
+      assert.equal(expensiveRuns, 0)
+    } finally {
+      await fastify.close()
     }
   })
 })

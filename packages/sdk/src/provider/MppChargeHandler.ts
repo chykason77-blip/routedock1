@@ -8,6 +8,7 @@ import type { SessionStore } from '../store/SessionStore.js'
 import {
   InMemorySeenTxStore,
   paymentIdempotencyKey,
+  checkSettlementReplay,
   type SeenTxStore,
 } from './SeenTxStore.js'
 
@@ -84,16 +85,29 @@ export function createMppChargeHandler(opts: MppChargeHandlerOptions): RequestHa
       }
 
       // Idempotency: a retry of an already-settled charge replays the cached
-      // receipt headers instead of settling (and billing) a second time.
-      const idempotencyKey = await paymentIdempotencyKey((name) => {
-        const v = req.headers[name.toLowerCase()]
-        return Array.isArray(v) ? v[0] : (v as string | undefined)
-      })
+      // receipt headers instead of settling (and billing) a second time. The
+      // key is scoped to this route and replays are capped + time-bounded.
+      const idempotencyKey = await paymentIdempotencyKey(
+        (name) => {
+          const v = req.headers[name.toLowerCase()]
+          return Array.isArray(v) ? v[0] : (v as string | undefined)
+        },
+        {
+          method: req.method,
+          path: req.originalUrl.split('?')[0]!,
+          amount: amountHumanReadable,
+          payTo: recipient,
+        },
+      )
       if (idempotencyKey) {
-        const cached = await seenTxStore.get(idempotencyKey)
-        if (cached) {
-          if (cached.headers) {
-            for (const [k, val] of Object.entries(cached.headers)) {
+        const replayCheck = await checkSettlementReplay(seenTxStore, idempotencyKey)
+        if (replayCheck.kind === 'spent') {
+          res.status(402).json({ error: 'Payment already used' })
+          return
+        }
+        if (replayCheck.kind === 'replay') {
+          if (replayCheck.record.headers) {
+            for (const [k, val] of Object.entries(replayCheck.record.headers)) {
               res.setHeader(k, val)
             }
           }
@@ -153,6 +167,7 @@ export function createMppChargeHandler(opts: MppChargeHandlerOptions): RequestHa
         await seenTxStore.set(idempotencyKey, {
           txHash: reference ?? null,
           headers: receiptHeaders,
+          createdAt: Date.now(),
         })
       }
 

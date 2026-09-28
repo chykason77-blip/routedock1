@@ -70,8 +70,13 @@ store exists to prevent.
 Recommendation: back it with **Supabase**, which is already provisioned and
 strongly consistent. A `settlements` table keyed on the idempotency key with a
 unique constraint turns the race into a constraint violation the handler can
-treat as a cache hit. The interface is two methods (`get`/`set`) and is already
-injectable via the `seenTxStore` option.
+treat as a cache hit. The interface is three methods (`get`/`set`/`claimReplay`)
+and is already injectable via the `seenTxStore` option. `claimReplay` records a
+replay atomically and returns the new count; the Supabase implementation calls
+the `claim_settlement_replay` function added in
+`supabase/migrations/005_settlement_replay_limit.sql`. The idempotency key is
+scoped to the method, path, amount and payee, and a cached settlement is only
+replayed within a 60s window and a bounded number of times.
 
 ### 2. `mpp-session` channel `Store` — voucher monotonicity (provider-b only)
 

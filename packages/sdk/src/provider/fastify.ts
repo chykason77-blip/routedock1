@@ -90,10 +90,24 @@ function buildExpressShims(
   const nativeGetHeader = rawRes.getHeader.bind(rawRes)
   const nativeEnd = rawRes.end.bind(rawRes)
 
+  // Hijack Fastify's reply only when the handler writes a response itself.
+  // Hijacking up front would break the equivalent of a verified payment:
+  // when a handler calls next() (replay, or a settled request) Fastify must
+  // still run the route handler and send its response, which a hijacked reply
+  // suppresses — leaving the client waiting forever.
+  let hijacked = false
+  const ensureHijacked = (): void => {
+    if (!hijacked) {
+      hijacked = true
+      fastifyReply.hijack()
+    }
+  }
+
   // Collect headers written via shim and flush at send time
   const extraHeaders: Record<string, string | string[]> = {}
 
   const resSend = (body?: unknown): Response => {
+    ensureHijacked()
     if (!rawRes.headersSent) {
       for (const [k, v] of Object.entries(extraHeaders)) {
         nativeSetHeader(k, v)
@@ -146,7 +160,7 @@ function buildExpressShims(
     Object.defineProperty(res, 'set', { value: resSet, configurable: true })
     Object.defineProperty(res, 'setHeader', { value: resSetHeader, configurable: true })
     Object.defineProperty(res, 'end', {
-      value: (data?: unknown) => { nativeEnd(data) },
+      value: (data?: unknown) => { ensureHijacked(); nativeEnd(data) },
       configurable: true,
     })
   }
@@ -157,15 +171,17 @@ function buildExpressShims(
 /**
  * Run an Express-style handler against a Fastify request/reply pair.
  *
- * We hijack the reply so Fastify doesn't try to serialise the response a
- * second time — the shim writes directly to the underlying ServerResponse.
+ * The shim writes directly to the underlying ServerResponse and hijacks the
+ * reply lazily at the first write, so Fastify never serialises a response the
+ * handler already sent. When the handler calls `next()` instead (payment
+ * verified, or a replayed settlement) Fastify stays in control and runs the
+ * route handler normally.
  */
 function runExpressHandler(
   handler: RequestHandler,
   fastifyRequest: FastifyRequest,
   fastifyReply: FastifyReply,
 ): Promise<void> {
-  fastifyReply.hijack()
   const { req, res } = buildExpressShims(
     fastifyRequest.raw,
     fastifyReply.raw,
