@@ -66,6 +66,7 @@ export class X402Client {
     private readonly network: Network,
     private readonly retryPolicy?: RetryPolicy,
     private readonly preSignHook?: X402PreSignHook,
+    logger?: RouteDockLogger,
   ) {
     const caip2 = CAIP2[network]
     this.signer =
@@ -81,7 +82,7 @@ export class X402Client {
 
   /** Replace signer (e.g. swap to Nulth ZK account payer before pay) */
   withSigner(signer: ClientStellarSigner): X402Client {
-    return new X402Client(signer, this.network, this.retryPolicy, this.preSignHook)
+    return new X402Client(signer, this.network, this.retryPolicy, this.preSignHook, this.logger)
   }
 
   async pay(url: string, manifest: RouteDockManifest): Promise<PaymentResult> {

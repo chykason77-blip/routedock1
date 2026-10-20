@@ -713,3 +713,200 @@ test('X402Client - approving pre-sign hook runs once and signing proceeds', asyn
     globalThis.fetch = originalFetch
   }
 })
+
+// ── #553: a falsy txHash must never be reported as a settlement ─────────────
+
+function settledResponse(body: Record<string, string>): Response {
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json', ...body },
+  })
+}
+
+test('X402Client - paid 200 with empty X-Payment-Response transaction yields null txHash', async (t) => {
+  // The exact shape the intermittently-failing E2E runs hit: a provider that
+  // served the paid route with a settle result whose `transaction` was "".
+  const client = new X402Client(keypair.secret(), 'testnet')
+  t.mock.method(x402HTTPClient.prototype, 'createPaymentPayload', async () => makePayload())
+  const originalFetch = globalThis.fetch
+
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    if (headers['PAYMENT-SIGNATURE']) {
+      return settledResponse({
+        'X-Payment-Response': encodePaymentResponseHeader({
+          success: true,
+          transaction: '',
+          network: 'stellar:testnet',
+        }),
+      })
+    }
+    return paymentRequiredResponse()
+  }) as typeof fetch
+
+  try {
+    const result = await client.pay('https://api.test/paid', manifest)
+    assert.equal(result.txHash, null, 'empty transaction must normalize to null, not ""')
+    assert.equal(result.amount, '0.001', 'a paid request still reports the signed amount')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('X402Client - paid 200 with success: false yields null txHash and logs the reason', async (t) => {
+  const lines: Array<{ message: string; fields: RouteDockLogFields | undefined }> = []
+  const client = new X402Client(
+    keypair.secret(),
+    'testnet',
+    undefined,
+    undefined,
+    (_level, message, fields) => lines.push({ message, fields }),
+  )
+  t.mock.method(x402HTTPClient.prototype, 'createPaymentPayload', async () => makePayload())
+  const originalFetch = globalThis.fetch
+
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    if (headers['PAYMENT-SIGNATURE']) {
+      return settledResponse({
+        'X-Payment-Response': encodePaymentResponseHeader({
+          success: false,
+          transaction: '',
+          network: 'stellar:testnet',
+          errorReason: 'settle rejected',
+        }),
+      })
+    }
+    return paymentRequiredResponse()
+  }) as typeof fetch
+
+  try {
+    const result = await client.pay('https://api.test/paid', manifest)
+    assert.equal(result.txHash, null)
+    const unsettled = lines.find(
+      (l) => l.message === '[x402] X-Payment-Response reports an unsettled payment',
+    )
+    assert.ok(unsettled, 'the unsettled header is logged')
+    assert.equal(unsettled?.fields?.reason, 'settle rejected', "the provider's reason survives")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('X402Client - paid 200 with undecodable X-Payment-Response yields null txHash', async (t) => {
+  const client = new X402Client(keypair.secret(), 'testnet')
+  t.mock.method(x402HTTPClient.prototype, 'createPaymentPayload', async () => makePayload())
+  const originalFetch = globalThis.fetch
+
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    if (headers['PAYMENT-SIGNATURE']) {
+      return settledResponse({ 'X-Payment-Response': 'not base64!!' })
+    }
+    return paymentRequiredResponse()
+  }) as typeof fetch
+
+  try {
+    const result = await client.pay('https://api.test/paid', manifest)
+    assert.equal(result.txHash, null)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('X402Client - paid 200 with a real transaction hash passes through', async (t) => {
+  const client = new X402Client(keypair.secret(), 'testnet')
+  t.mock.method(x402HTTPClient.prototype, 'createPaymentPayload', async () => makePayload())
+  const originalFetch = globalThis.fetch
+
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    if (headers['PAYMENT-SIGNATURE']) {
+      return settledResponse({
+        'X-Payment-Response': encodePaymentResponseHeader({
+          success: true,
+          transaction: 'abc123hash',
+          network: 'stellar:testnet',
+        }),
+      })
+    }
+    return paymentRequiredResponse()
+  }) as typeof fetch
+
+  try {
+    const result = await client.pay('https://api.test/paid', manifest)
+    assert.equal(result.txHash, 'abc123hash')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('X402Client - debug diagnostics trace probe, paid response, and header state', async (t) => {
+  const lines: Array<{
+    level: RouteDockLogLevel
+    message: string
+    fields: RouteDockLogFields | undefined
+  }> = []
+  const client = new X402Client(
+    keypair.secret(),
+    'testnet',
+    undefined,
+    undefined,
+    (level, message, fields) => lines.push({ level, message, fields }),
+  )
+  t.mock.method(x402HTTPClient.prototype, 'createPaymentPayload', async () => makePayload())
+  const originalFetch = globalThis.fetch
+
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    if (headers['PAYMENT-SIGNATURE']) return settledResponse({})
+    return paymentRequiredResponse()
+  }) as typeof fetch
+
+  try {
+    const result = await client.pay('https://api.test/paid', manifest)
+    assert.equal(result.txHash, null)
+
+    const messages = lines.map((l) => l.message)
+    assert.ok(messages.includes('[x402] unpaid probe response'), 'probe status logged')
+    assert.ok(
+      messages.includes('[x402] sending paid request with payment header'),
+      'paid request logged',
+    )
+    assert.ok(messages.includes('[x402] paid request response'), 'paid response logged')
+    assert.ok(
+      messages.includes('[x402] settled 2xx carried no X-Payment-Response header'),
+      'missing response header logged',
+    )
+    const probe = lines.find((l) => l.message === '[x402] unpaid probe response')
+    assert.equal(probe?.fields?.status, 402)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('X402Client - free non-402 probe is logged as a free response', async () => {
+  const lines: string[] = []
+  const client = new X402Client(
+    keypair.secret(),
+    'testnet',
+    undefined,
+    undefined,
+    (_level, message) => lines.push(message),
+  )
+  const originalFetch = globalThis.fetch
+
+  globalThis.fetch = (async () => jsonResponse({ status: 'ok', free: true })) as typeof fetch
+
+  try {
+    const result = await client.pay('https://api.test/paid-but-open', manifest)
+    assert.equal(result.txHash, null)
+    assert.equal(result.amount, '0')
+    assert.ok(
+      lines.includes('[x402] unpaid probe returned non-402 success — serving as free response'),
+      'free path is visible in the debug trail',
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

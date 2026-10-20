@@ -246,7 +246,7 @@ export class RouteDockClient {
     // Carry the client's logger into retry diagnostics so a consumer that
     // silences the SDK silences the retry path too.
     const retryPolicy = this.logger ? { ...this.retryPolicy, logger: this.logger } : this.retryPolicy
-    this.x402 = new X402Client(secretKey, this.network, retryPolicy, config.preSignHook)
+    this.x402 = new X402Client(secretKey, this.network, retryPolicy, config.preSignHook, this.logger)
     this.charge = new MppChargeClient(this.keypair, this.network, retryPolicy)
     this.session = new MppSessionClient(this.keypair, this.network, retryPolicy, undefined, this.logger)
   }
