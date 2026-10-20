@@ -13,6 +13,7 @@ import {
   wrapFetchError,
 } from '../errors.js'
 import { stroopsToUsdc } from '../internal/usdc.js'
+import { readSettleResult } from '../internal/settleResult.js'
 import { withRetry, type RetryPolicy } from '../internal/retry.js'
 import type { RouteDockLogger } from '../internal/logger.js'
 import { checkX402Accept, filterX402Accepts, type Caip2Network } from './challenge.js'
@@ -187,26 +188,23 @@ export class X402Client {
       return response
     }, this.retryPolicy)
 
+    // #553: read the response header with the provider's own settle-result
+    // contract. `success: false`, or `success: true` carrying an empty
+    // transaction, is not a settlement — txHash stays null rather than becoming
+    // '', which is truthy enough to pass `assert(result.txHash)` checks and gets
+    // stored or rendered downstream as if it were a transaction hash.
     let txHash: string | null = null
     const responseHeader = settled.headers.get('X-Payment-Response')
     if (!responseHeader) {
-      this.logger?.('debug', '[x402] settled 2xx carried no X-Payment-Response header', {
-        txHash: null,
-      })
+      this.logger?.('debug', '[x402] settled 2xx carried no X-Payment-Response header')
     } else {
       try {
-        const settleResponse = decodePaymentResponseHeader(responseHeader)
-        const transaction = (settleResponse as { transaction?: unknown }).transaction
-        // #553: an empty-string transaction is not a settlement. A provider
-        // that answers 2xx with `transaction: ""` (a settle that failed but was
-        // reported as settled) must yield null, not '' — '' would slip past
-        // `assert(txHash)`-style checks and past the spend rollback in
-        // RouteDockClient, which compares against null.
-        if (typeof transaction === 'string' && transaction.length > 0) {
-          txHash = transaction
+        const outcome = readSettleResult(decodePaymentResponseHeader(responseHeader))
+        if (outcome.ok) {
+          txHash = outcome.txHash
         } else {
-          this.logger?.('debug', '[x402] X-Payment-Response transaction field is empty', {
-            transaction,
+          this.logger?.('debug', '[x402] X-Payment-Response reports an unsettled payment', {
+            ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
           })
         }
       } catch (err) {

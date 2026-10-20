@@ -154,7 +154,10 @@ async function runTests(): Promise<void> {
     assert(x402Result.data, 'x402 should have response data')
     assert(x402Result.amount, 'x402 should have amount paid')
   } catch (assertErr) {
-    log('x402', `result: mode=${x402Result.mode} amount=${x402Result.amount} txHash=${JSON.stringify(x402Result.txHash)}`)
+    log(
+      'x402',
+      `result: mode=${x402Result.mode} amount=${x402Result.amount} txHash=${JSON.stringify(x402Result.txHash)}`,
+    )
     dumpX402Diagnostics()
     throw assertErr
   }

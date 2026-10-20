@@ -23,7 +23,7 @@ import {
   checkSettlementReplay,
   type SeenTxStore,
 } from './SeenTxStore.js'
-import { readSettleResult } from './settleResult.js'
+import { readSettleResult } from '../internal/settleResult.js'
 
 type Network = 'testnet' | 'mainnet'
 

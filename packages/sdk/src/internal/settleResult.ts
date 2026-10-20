@@ -3,6 +3,10 @@
  * (`{ success: false, errorReason }`) rather than throwing, so every adapter
  * must read the same two pieces: the transaction hash when it really settled,
  * or the reason it did not.
+ *
+ * The client reads the same shape out of the provider's `X-Payment-Response`
+ * header, so a settle the provider did not complete cannot be reported to the
+ * agent as a transaction hash (#553).
  */
 export type SettleOutcome = { ok: true; txHash: string } | { ok: false; reason?: string }
 
