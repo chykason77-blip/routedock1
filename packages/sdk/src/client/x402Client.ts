@@ -14,6 +14,7 @@ import {
 } from '../errors.js'
 import { stroopsToUsdc } from '../internal/usdc.js'
 import { withRetry, type RetryPolicy } from '../internal/retry.js'
+import type { RouteDockLogger } from '../internal/logger.js'
 import { checkX402Accept, filterX402Accepts, type Caip2Network } from './challenge.js'
 
 type Network = 'testnet' | 'mainnet'
@@ -31,11 +32,13 @@ type ProbeOutcome =
 export class X402Client {
   private readonly httpClient: x402HTTPClient
   private readonly signer: ClientStellarSigner
+  private readonly logger: RouteDockLogger | undefined
 
   constructor(
     secretKeyOrSigner: string | ClientStellarSigner,
     private readonly network: Network,
     private readonly retryPolicy?: RetryPolicy,
+    logger?: RouteDockLogger,
   ) {
     const caip2 = CAIP2[network]
     this.signer =
@@ -46,11 +49,12 @@ export class X402Client {
     const core = new x402Client()
     core.register(caip2, scheme)
     this.httpClient = new x402HTTPClient(core)
+    this.logger = logger
   }
 
   /** Replace signer (e.g. swap to Nulth ZK account payer before pay) */
   withSigner(signer: ClientStellarSigner): X402Client {
-    return new X402Client(signer, this.network, this.retryPolicy)
+    return new X402Client(signer, this.network, this.retryPolicy, this.logger)
   }
 
   async pay(url: string, manifest: RouteDockManifest): Promise<PaymentResult> {
@@ -73,6 +77,8 @@ export class X402Client {
         throw wrapFetchError(err, 'x402 initial request')
       }
 
+      this.logger?.('debug', '[x402] unpaid probe response', { status: init.status })
+
       if (init.status !== 402) {
         if (!init.ok) {
           throw httpStatusToError(
@@ -89,6 +95,14 @@ export class X402Client {
             `Failed to parse JSON from non-402 response (HTTP ${init.status})`,
           )
         }
+        // A paywalled route answering the unpaid probe with 2xx makes this the
+        // free path — nothing is paid, so txHash stays null and amount '0'.
+        // #553: log it, because a silently-open paywall is otherwise invisible.
+        this.logger?.(
+          'debug',
+          '[x402] unpaid probe returned non-402 success — serving as free response',
+          { status: init.status },
+        )
         return { kind: 'free', data }
       }
 
@@ -144,6 +158,8 @@ export class X402Client {
     const paymentHeaders = this.httpClient.encodePaymentSignatureHeader(paymentPayload)
     const signedAmount = stroopsToUsdc(BigInt(paymentPayload.accepted.amount))
 
+    this.logger?.('debug', '[x402] sending paid request with payment header')
+
     // Phase 4: paid request. Retries reuse the SAME paymentHeaders object, so
     // the provider's idempotency store can replay the cached settlement rather
     // than charging a second time.
@@ -154,6 +170,8 @@ export class X402Client {
       } catch (err) {
         throw wrapFetchError(err, 'x402 settlement request')
       }
+
+      this.logger?.('debug', '[x402] paid request response', { status: response.status })
 
       if (!response.ok) {
         if (response.status >= 500 || response.status === 429 || response.status === 503) {
@@ -171,12 +189,31 @@ export class X402Client {
 
     let txHash: string | null = null
     const responseHeader = settled.headers.get('X-Payment-Response')
-    if (responseHeader) {
+    if (!responseHeader) {
+      this.logger?.('debug', '[x402] settled 2xx carried no X-Payment-Response header', {
+        txHash: null,
+      })
+    } else {
       try {
         const settleResponse = decodePaymentResponseHeader(responseHeader)
-        txHash = (settleResponse as { transaction?: string }).transaction ?? null
-      } catch {
+        const transaction = (settleResponse as { transaction?: unknown }).transaction
+        // #553: an empty-string transaction is not a settlement. A provider
+        // that answers 2xx with `transaction: ""` (a settle that failed but was
+        // reported as settled) must yield null, not '' — '' would slip past
+        // `assert(txHash)`-style checks and past the spend rollback in
+        // RouteDockClient, which compares against null.
+        if (typeof transaction === 'string' && transaction.length > 0) {
+          txHash = transaction
+        } else {
+          this.logger?.('debug', '[x402] X-Payment-Response transaction field is empty', {
+            transaction,
+          })
+        }
+      } catch (err) {
         // non-fatal — some facilitators may omit the response header
+        this.logger?.('debug', '[x402] X-Payment-Response header present but undecodable', {
+          error: err,
+        })
       }
     }
 
