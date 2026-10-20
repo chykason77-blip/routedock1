@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { Keypair } from '@stellar/stellar-sdk'
 import { reconcileAbandonedSessions } from '../SessionReconciler.js'
+import { bytesToHex } from '../../internal/encoding.js'
 
 function makeSupabaseMock(rows: any[]) {
   const store = [...rows]
@@ -86,7 +87,7 @@ describe('Provider-B Session Recovery Pipeline', () => {
     const mockChannelClose = async (args: any) => {
       assert.equal(args.channel, channelId)
       assert.equal(args.amount, 50000n)
-      assert.equal(args.signature.toString('hex'), 'a'.repeat(128))
+      assert.equal(bytesToHex(args.signature), 'a'.repeat(128))
       return 'tx-hash-provider-b-settled'
     }
 

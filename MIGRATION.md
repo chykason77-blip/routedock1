@@ -1,3 +1,36 @@
+# Migration: runtime-neutral SDK entry points (`@routedock/routedock` 0.4)
+
+`/client`, `/react` and `/provider/hono` no longer depend on `node:fs`, `node:crypto` or `Buffer`,
+so they run in browsers and on Workers/Deno/Bun without `nodejs_compat` or polyfills.
+
+## `FileSpendStore` moved to a Node-only entry point
+
+`FileSpendStore` uses `node:fs`, so it is no longer re-exported from `SpendStore` or from
+`@routedock/routedock/client`.
+
+```diff
+-import { RouteDockClient, FileSpendStore } from '@routedock/routedock/client'
++import { RouteDockClient } from '@routedock/routedock/client'
++import { FileSpendStore } from '@routedock/routedock/node'
+```
+
+The root entry `@routedock/routedock` still exports it, so existing root imports keep working.
+`agent/` and `packages/mcp-server` now import from `@routedock/routedock/node`.
+
+## Other changes
+
+- `manifestDigest()` returns a `Uint8Array` instead of a `Buffer` (a `Buffer` is a `Uint8Array`, so
+  only callers that used Buffer methods such as `.toString('hex')` need to change; use
+  `Buffer.from(digest).toString('hex')` on Node). Digests and manifest signatures are byte-identical
+  to previous releases (covered by a fixed-vector test).
+- `SessionReconciler`'s `channelClose` receives `signature` as a `Uint8Array` (matches
+  `@stellar/mpp`'s `close()` type).
+- SHA-256/512 now come from `@noble/hashes` (already in the lockfile via the Stellar SDK).
+- CI runs `scripts/check-runtime-neutral.mjs` and fails if a built runtime-neutral entry imports a
+  Node built-in or references `Buffer`.
+
+---
+
 # Migration: apps/web Vercel → Cloudflare Workers (2026-08-02)
 
 The **`apps/web`** Next.js app (the RouteDock site + dashboard) was moved off Vercel (Hobby account

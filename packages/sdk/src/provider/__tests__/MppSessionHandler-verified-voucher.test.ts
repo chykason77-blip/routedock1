@@ -212,7 +212,7 @@ describe('routedock (Express) — voucher state only from verified credentials',
       assert.equal(closeCalls.length, 1)
       assert.ok(closeCalls[0])
       assert.equal(closeCalls[0].amount, 5000n)
-      assert.deepEqual(closeCalls[0].signature, Buffer.from('ff'.repeat(32), 'hex'))
+      assert.deepEqual([...closeCalls[0].signature], [...Buffer.from('ff'.repeat(32), 'hex')])
     } finally {
       await close()
     }

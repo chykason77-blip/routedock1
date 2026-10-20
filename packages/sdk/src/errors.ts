@@ -9,6 +9,7 @@ export type RouteDockErrorCode =
   | 'SIGNATURE'
   | 'VOUCHER_MONOTONICITY'
   | 'POLICY_REJECT'
+  | 'PAYMENT_REJECTED'
   | 'CHANNEL_STATE'
   | 'DISPUTE'
   | 'REFUND_WINDOW'
@@ -162,6 +163,34 @@ export class RouteDockPolicyRejectError extends RouteDockError {
   }
 }
 
+/**
+ * The provider refused a signed, paid request (HTTP 4xx such as 401/402).
+ * Not a manifest problem and not a local policy rejection: `status` is the HTTP
+ * status and `reason` is the provider's own explanation when it sent one
+ * (e.g. the facilitator's `invalidReason`). Not retryable — the same signed
+ * payment would be refused again.
+ */
+export class RouteDockPaymentRejectedError extends RouteDockError {
+  readonly status: number
+  /** The provider's `reason` field, if its response body was JSON and had one. */
+  readonly reason?: string
+  /** The provider's `error` field (short summary), if present. */
+  readonly providerError?: string
+
+  constructor(
+    message: string,
+    status: number,
+    details: { reason?: string; providerError?: string } = {},
+    options: RouteDockErrorOptions = {},
+  ) {
+    super(message, 'PAYMENT_REJECTED', false, options)
+    this.name = 'RouteDockPaymentRejectedError'
+    this.status = status
+    if (details.reason !== undefined) this.reason = details.reason
+    if (details.providerError !== undefined) this.providerError = details.providerError
+  }
+}
+
 /** Channel lifecycle failure (open, simulate, close, missing settlement fields). */
 export class RouteDockChannelStateError extends RouteDockError {
   constructor(message: string, options: RouteDockErrorOptions = {}) {
@@ -228,6 +257,74 @@ export function httpStatusToError(
   }
 
   return new RouteDockNetworkError(message, opts)
+}
+
+const MAX_REJECTION_BODY_BYTES = 64 * 1024
+const MAX_REJECTION_FIELD_CHARS = 500
+
+/** Read at most `limit` bytes of a body as text; `null` if it is larger or unreadable. */
+async function readBoundedText(response: Response, limit: number): Promise<string | null> {
+  const body = response.body
+  if (!body) return null
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined)
+        return null
+      }
+      chunks.push(value)
+    }
+  } catch {
+    return null
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+/**
+ * Build a {@link RouteDockPaymentRejectedError} from a rejected paid response.
+ * Reads the JSON body best-effort (a missing, non-JSON or oversized body just
+ * means no `reason`; the provider is untrusted, so the read is bounded and the
+ * fields are length-capped), and never throws.
+ */
+export async function paymentRejectedError(
+  label: string,
+  status: number,
+  response: Response,
+): Promise<RouteDockPaymentRejectedError> {
+  let reason: string | undefined
+  let providerError: string | undefined
+  try {
+    const text = await readBoundedText(response, MAX_REJECTION_BODY_BYTES)
+    const body: unknown = text === null ? null : JSON.parse(text)
+    if (body !== null && typeof body === 'object') {
+      const { reason: r, error: e } = body as { reason?: unknown; error?: unknown }
+      if (typeof r === 'string' && r.length > 0) reason = r.slice(0, MAX_REJECTION_FIELD_CHARS)
+      if (typeof e === 'string' && e.length > 0) providerError = e.slice(0, MAX_REJECTION_FIELD_CHARS)
+    }
+  } catch {
+    // best effort only — keep the status-only message
+  }
+  const detail = reason ?? providerError
+  return new RouteDockPaymentRejectedError(
+    `${label}: HTTP ${status}${detail ? ` — ${detail}` : ''}`,
+    status,
+    {
+      ...(reason !== undefined ? { reason } : {}),
+      ...(providerError !== undefined ? { providerError } : {}),
+    },
+  )
 }
 
 /** Wrap a low-level fetch failure; preserves existing RouteDockErrors. */

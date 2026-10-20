@@ -55,7 +55,13 @@ Open a sustained MPP session for streaming data. Uses off-chain vouchers for low
 
 **Use case:** Streaming orderbooks, real-time data feeds, sustained access
 
-**Returns:** `channel_id` and open transaction hash — pass `channel_id` to `stream_session` and `close_session`
+`url` is the provider's streaming endpoint, e.g. `https://api-b.routedock.xyz/stream/orderbook`. Vouchers
+and the closing `DELETE` go to this exact URL. A bare origin (`https://api-b.routedock.xyz`) is resolved
+from the provider's `/.well-known/routedock.json`: `endpoints.stream` is used, or the only endpoint if
+there is just one. It must be `GET` and on the same origin; otherwise the call fails without opening a
+session and lists the manifest's endpoints.
+
+**Returns:** `channel_id`, open transaction hash and `endpoint_url` — pass `channel_id` to `stream_session` and `close_session`
 
 ### 3. stream_session(channel_id, max_messages)
 
@@ -131,7 +137,7 @@ Once configured, ask Claude:
 > "Check my Stellar balance"
 > "List providers that offer price data"
 > "Pay for data from https://api-a.routedock.xyz/price with a max of 0.01 USDC"
-> "Open a session with https://api-b.routedock.xyz for streaming orderbook data"
+> "Open a session with https://api-b.routedock.xyz/stream/orderbook for streaming orderbook data"
 
 ## Implementation Details
 

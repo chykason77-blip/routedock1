@@ -239,12 +239,11 @@ function createX402HonoHandler(opts: RouteDockHonoOptions): MiddlewareHandler {
           requirements,
         )
         if (!verifyResult.isValid) {
-          return c.json(
-            {
-              error: 'Payment verification failed',
-              reason: (verifyResult as { invalidReason?: string }).invalidReason,
-            },
-            401,
+          // Same shape as a settlement failure: 402 + fresh requirements + reason,
+          // so a protocol-following client can retry or report why it was refused.
+          return respondPaymentRequired(
+            'Payment verification failed',
+            (verifyResult as { invalidReason?: string }).invalidReason,
           )
         }
         const settleResult = await localFacilitator.settle(

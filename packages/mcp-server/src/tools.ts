@@ -51,7 +51,8 @@ export const TOOLS: Tool[] = [
       properties: {
         url: {
           type: 'string',
-          description: 'The base URL of the provider (e.g., https://api-b.routedock.xyz)',
+          description:
+            "The provider's streaming endpoint URL (e.g., https://api-b.routedock.xyz/stream/orderbook). Vouchers and the closing DELETE go to this exact URL. A bare origin (e.g., https://api-b.routedock.xyz) is also accepted and resolved to the provider's streaming endpoint from its /.well-known/routedock.json manifest.",
         },
         initial_deposit: {
           type: 'string',

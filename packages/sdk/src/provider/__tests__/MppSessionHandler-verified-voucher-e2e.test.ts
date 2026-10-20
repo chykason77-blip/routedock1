@@ -265,7 +265,7 @@ describe('routedock (Express) — real HTTP regression coverage for verified-onl
       assert.equal(deleteRes.status, 200)
       assert.equal(closeCalls.length, 1)
       assert.equal(closeCalls[0]?.amount, 5000n)
-      assert.deepEqual(closeCalls[0]?.signature, Buffer.from('ab'.repeat(64), 'hex'))
+      assert.deepEqual([...(closeCalls[0]?.signature ?? [])], [...Buffer.from('ab'.repeat(64), 'hex')])
     } finally {
       await close()
     }

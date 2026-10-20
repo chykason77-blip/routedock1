@@ -167,6 +167,17 @@ In all adapters, `asset` and `assetContract` middleware options are optional whe
 - **`client.estimateCost(url, options?)`**:
   Returns `asset` matching the selected eligible asset for the chosen payment mode and endpoint, failing closed if none match.
 
+### Spend caps and non-USDC assets
+
+`spendCap` (`daily` and `endpointCaps`) is a single USDC accumulator, and `spendCap.asset` can only be `'USDC'`. The client never converts between assets, so it does not guess what 5 XLM is worth:
+
+- If a cap is configured and the asset selected for the payment (`selectAsset(manifest, mode, url)`) is not `spendCap.asset`, `pay()` and `openSession()` throw `RouteDockPolicyRejectError` with reason `local_cap_asset_mismatch`.
+- The check runs before the trustline preflight and before a session channel is opened, so nothing is spent, deposited or recorded.
+- Nothing in another asset is ever added to the USDC total.
+- Manifests that only price in USDC, and clients with no `spendCap`, behave exactly as before.
+
+To pay a provider that prices in XLM or another asset, construct the client without `spendCap` and enforce limits in your own policy layer.
+
 ---
 
 ## 7. Manifest Signing & Security

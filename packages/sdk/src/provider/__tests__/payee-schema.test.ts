@@ -10,6 +10,10 @@ const validate = ajv.compile(schema)
 
 const PAYEE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATOP'
 const X402_PAYEE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX402'
+const CHANNEL_FACTORY = 'CCK4XOW3YKQUEZFONUTINKMSNW7SNMRQZURME5U3UP7E6WNGK7UHUCAH'
+
+/** Session modes share SessionPricingConfig, so both need the same coverage. */
+const SESSION_MODES = ['mpp-session', 'mpp-session-ws'] as const
 
 function baseManifest(): Record<string, unknown> {
   return {
@@ -28,6 +32,24 @@ function baseManifest(): Record<string, unknown> {
     endpoints: { price: { method: 'GET', path: '/price' } },
     tags: ['test'],
   }
+}
+
+/** A valid SessionPricingConfig, minus the `payee` override the schema must refuse. */
+function sessionPricing(): Record<string, unknown> {
+  return {
+    rate: '0.0001',
+    per: 'voucher',
+    channel_factory: CHANNEL_FACTORY,
+    min_deposit: '0.10',
+    refund_waiting_period_ledgers: 17280,
+  }
+}
+
+function manifestWithSessionPricing(pricing: Record<string, unknown>, mode: string) {
+  const m = baseManifest()
+  ;(m.modes as string[]).push(mode)
+  ;(m.pricing as Record<string, Record<string, unknown>>)[mode] = pricing
+  return m
 }
 
 describe('routedock.schema — per-mode payee', () => {
@@ -50,18 +72,28 @@ describe('routedock.schema — per-mode payee', () => {
     assert.equal(validate(m), false)
   })
 
-  it('rejects a per-mode payee on mpp-session (override not supported there)', () => {
-    const m = baseManifest()
-    ;(m.modes as string[]).push('mpp-session')
-    const pricing = m.pricing as Record<string, Record<string, unknown>>
-    pricing['mpp-session'] = {
-      rate: '0.0001',
-      per: 'voucher',
-      channel_contract: 'CCK4XOW3YKQUEZFONUTINKMSNW7SNMRQZURME5U3UP7E6WNGK7UHUCAH',
-      min_deposit: '0.10',
-      refund_waiting_period_ledgers: 17280,
-      payee: PAYEE,
-    }
-    assert.equal(validate(m), false)
-  })
+  for (const mode of SESSION_MODES) {
+    it(`accepts valid ${mode} session pricing`, () => {
+      const m = manifestWithSessionPricing(sessionPricing(), mode)
+      assert.equal(validate(m), true, JSON.stringify(validate.errors))
+    })
+
+    it(`rejects a per-mode payee on ${mode} (override not supported there)`, () => {
+      const m = manifestWithSessionPricing({ ...sessionPricing(), payee: PAYEE }, mode)
+      assert.equal(validate(m), false, `${mode} must not accept a payee override`)
+
+      // Pin the rejection to `payee` so the test cannot go red for an
+      // unrelated schema reason and still pass.
+      const error = validate.errors!.find(
+        (entry) =>
+          entry.keyword === 'additionalProperties' &&
+          entry.instancePath === `/pricing/${mode}` &&
+          entry.params!.additionalProperty === 'payee',
+      )
+      assert.ok(
+        error,
+        `expected an additionalProperties error for payee at /pricing/${mode}, got ${JSON.stringify(validate.errors)}`,
+      )
+    })
+  }
 })

@@ -29,6 +29,8 @@ export * from './client/MppChargeClient.js'
 export * from './client/NulthVault.js'
 export * from './store/SessionStore.js'
 export * from './store/SpendStore.js'
+// Node-only (node:fs) — kept out of SpendStore.ts so runtime-neutral entries stay clean.
+export * from './store/FileSpendStore.js'
 export * from './store/SupabaseSeenTxStore.js'
 export * from './provider/routedockMiddleware.js'
 export * from './provider/registerProvider.js'

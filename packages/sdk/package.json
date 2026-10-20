@@ -38,6 +38,9 @@
       ],
       "schema": [
         "dist/schema.d.ts"
+      ],
+      "node": [
+        "dist/node.d.ts"
       ]
     }
   },
@@ -112,6 +115,16 @@
         "default": "./dist/provider/fastify.cjs"
       }
     },
+    "./node": {
+      "import": {
+        "types": "./dist/node.d.ts",
+        "default": "./dist/node.js"
+      },
+      "require": {
+        "types": "./dist/node.d.cts",
+        "default": "./dist/node.cjs"
+      }
+    },
     "./schema": {
       "import": {
         "types": "./dist/schema.d.ts",
@@ -131,6 +144,7 @@
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.0.0",
+    "@noble/hashes": "^1.8.0",
     "@routedock/nulth-sdk": "workspace:*",
     "@stellar/mpp": "^0.4.0",
     "@stellar/stellar-sdk": "^14.6.1",

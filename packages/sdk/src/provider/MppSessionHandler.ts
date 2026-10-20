@@ -14,6 +14,7 @@ import {
 } from './mppCompatibility.js'
 import type { Method } from 'mppx'
 import { resolveLogger, type RouteDockLogger } from '../internal/logger.js'
+import { hexToBytes } from '../internal/encoding.js'
 
 /** Store shape extended with optional atomic update operation. */
 export type ChannelStore = MppxStore.Store & {
@@ -285,7 +286,7 @@ export function createMppSessionHandler(opts: MppSessionHandlerOptions): Request
           const closeTxHash = await channelClose({
             channel: opts.channelFactory,
             amount: closeAmount,
-            signature: Buffer.from(closeSig, 'hex'),
+            signature: hexToBytes(closeSig),
             feePayer: channelAuthorizer(payeeKeypair),
             network: networkId,
           })

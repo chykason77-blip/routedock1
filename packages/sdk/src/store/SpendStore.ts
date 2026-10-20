@@ -70,5 +70,3 @@ export class InMemorySpendStore implements SpendStore {
   }
 }
 
-export * from './FileSpendStore.js'
-

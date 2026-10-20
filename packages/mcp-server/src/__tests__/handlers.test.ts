@@ -10,6 +10,7 @@ import {
   handleCheckBalance,
   handleListProviders,
   type HandlerDeps,
+  type PayForDataArgs,
   type ToolResult,
   type HorizonBalance,
   type ProviderRow,
@@ -63,6 +64,18 @@ describe('TOOLS schema regression', () => {
     assert.equal(schema.minimum, 1)
     assert.equal(schema.maximum, MAX_STREAM_MESSAGES)
     assert.equal(MAX_STREAM_MESSAGES, 50)
+  })
+
+  it('open_session url describes the streaming endpoint, not a base URL (issue #317)', () => {
+    const tool = TOOLS.find((t) => t.name === 'open_session')
+    assert.ok(tool, 'open_session tool must exist in TOOLS')
+
+    const description = (tool.inputSchema as unknown as {
+      properties: { url: { description: string } }
+    }).properties.url.description
+
+    assert.ok(description.includes('https://api-b.routedock.xyz/stream/orderbook'))
+    assert.ok(!description.toLowerCase().includes('the base url of the provider'))
   })
 })
 
@@ -220,6 +233,104 @@ describe('handlePayForData', () => {
     )
     assert.deepEqual(capturedModeOptions, { forceMode: 'mpp-charge' })
   })
+  // -------------------------------------------------------------------------
+  // max_amount validation (issue #316). MCP never validates arguments against
+  // inputSchema, so a missing or non-numeric max_amount used to compare as NaN
+  // and pay with no ceiling.
+  // -------------------------------------------------------------------------
+
+  /** Deps whose fake client quotes `price` and records which calls ran. */
+  function payDeps(price: string | undefined) {
+    const calls = { estimateCost: 0, pay: 0 }
+    const deps = baseDeps({
+      client: makeClient({
+        estimateCost: async () => {
+          calls.estimateCost++
+          return { ...estimate('0'), amount: price as string }
+        },
+        pay: async () => {
+          calls.pay++
+          return { mode: 'x402' as const, amount: price ?? '', txHash: 'TXHASH', timestamp: Date.now(), data: {} }
+        },
+      }),
+    })
+    return { deps, calls }
+  }
+
+  function errorText(result: ToolResult): string {
+    return (parseResult(result) as { error: string }).error
+  }
+
+  const INVALID_MAX_AMOUNTS: Array<[string, unknown]> = [
+    ['missing', undefined],
+    ['""', ''],
+    ['null', null],
+    ['"$0.01"', '$0.01'],
+    ['"abc"', 'abc'],
+    ['"one cent"', 'one cent'],
+    ['"0"', '0'],
+    ['"-1"', '-1'],
+    ['the number 0.01', 0.01],
+  ]
+
+  for (const [label, maxAmount] of INVALID_MAX_AMOUNTS) {
+    it(`rejects max_amount ${label} before estimating or paying`, async () => {
+      const { deps, calls } = payDeps('5.00')
+      const args = { url: 'https://provider.example.com/data', max_amount: maxAmount }
+      if (maxAmount === undefined) delete args.max_amount
+      const result = await handlePayForData(args as unknown as PayForDataArgs, deps)
+      assert.equal(result.isError, true)
+      assert.ok(errorText(result).includes('max_amount must be a positive USDC amount'))
+      assert.deepEqual(calls, { estimateCost: 0, pay: 0 })
+    })
+  }
+
+  it('rejects a 5.00 price against max_amount "0.01" without paying', async () => {
+    const { deps, calls } = payDeps('5.00')
+    const result = await handlePayForData(
+      { url: 'https://provider.example.com/data', max_amount: '0.01' },
+      deps,
+    )
+    assert.equal(result.isError, true)
+    assert.ok(errorText(result).includes('exceeds max_amount'))
+    assert.equal(calls.pay, 0)
+  })
+
+  for (const price of ['0.01', '0.0100000']) {
+    it(`pays when price "${price}" equals max_amount "0.01"`, async () => {
+      const { deps, calls } = payDeps(price)
+      const result = await handlePayForData(
+        { url: 'https://provider.example.com/data', max_amount: '0.01' },
+        deps,
+      )
+      assert.equal(result.isError, undefined)
+      assert.equal(calls.pay, 1)
+    })
+  }
+
+  it('rejects a price one stroop above max_amount', async () => {
+    const { deps, calls } = payDeps('0.0100001')
+    const result = await handlePayForData(
+      { url: 'https://provider.example.com/data', max_amount: '0.01' },
+      deps,
+    )
+    assert.equal(result.isError, true)
+    assert.ok(errorText(result).includes('exceeds max_amount'))
+    assert.equal(calls.pay, 0)
+  })
+
+  for (const price of ['abc', '0.00000001']) {
+    it(`rejects an unparseable provider price "${price}" without paying`, async () => {
+      const { deps, calls } = payDeps(price)
+      const result = await handlePayForData(
+        { url: 'https://provider.example.com/data', max_amount: '1.00' },
+        deps,
+      )
+      assert.equal(result.isError, true)
+      assert.ok(errorText(result).includes('undefined or invalid price'))
+      assert.equal(calls.pay, 0)
+    })
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -241,7 +352,7 @@ describe('handleOpenSession', () => {
   it('opens a session and stores it in openSessions', async () => {
     const sessions = new Map()
     const result = await handleOpenSession(
-      { url: 'https://provider.example.com' },
+      { url: 'https://provider.example.com/stream/orderbook' },
       baseDeps({ openSessions: sessions }),
       'secret123',
     )
@@ -272,6 +383,7 @@ describe('handleOpenSession', () => {
   it('passes when initial_deposit meets min_deposit', async () => {
     const fakeManifest = {
       pricing: { 'mpp-session': { min_deposit: '1.0' } },
+      endpoints: { stream: { method: 'GET', path: '/stream/orderbook' } },
     }
     const fetchManifest = async (_url: string) => ({
       json: async () => fakeManifest,
@@ -301,6 +413,176 @@ describe('handleOpenSession', () => {
     assert.equal(result.isError, true)
     const body = parseResult(result) as any
     assert.ok(body.error.includes('min_deposit'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// open_session endpoint resolution (issue #317)
+// A bare origin must resolve to the manifest's streaming endpoint, because the
+// SDK sends vouchers and the closing DELETE to the exact URL it is given.
+// ---------------------------------------------------------------------------
+
+describe('handleOpenSession endpoint resolution', () => {
+  /** Deps whose fetchManifest serves `manifest` and whose client records the
+   *  URL passed to openSession. */
+  function resolutionDeps(manifest: unknown) {
+    const manifestUrls: string[] = []
+    const openedUrls: string[] = []
+    const openSessions = new Map()
+    const defaultClient = makeClient()
+    const deps = baseDeps({
+      openSessions,
+      fetchManifest: async (url: string) => {
+        manifestUrls.push(url)
+        return { json: async () => manifest }
+      },
+      client: makeClient({
+        openSession: async (url: string) => {
+          openedUrls.push(url)
+          return defaultClient.openSession(url)
+        },
+      }),
+    })
+    return { deps, manifestUrls, openedUrls, openSessions }
+  }
+
+  const STREAM_MANIFEST = {
+    endpoints: { stream: { method: 'GET', path: '/stream/orderbook' } },
+  }
+
+  function errorText(result: ToolResult): string {
+    return (parseResult(result) as { error: string }).error
+  }
+
+  it('resolves a bare origin to endpoints.stream', async () => {
+    const { deps, manifestUrls, openedUrls } = resolutionDeps(STREAM_MANIFEST)
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(openedUrls, ['https://provider.example.com/stream/orderbook'])
+    assert.deepEqual(manifestUrls, ['https://provider.example.com/.well-known/routedock.json'])
+    const body = parseResult(result) as { endpoint_url: string }
+    assert.equal(body.endpoint_url, 'https://provider.example.com/stream/orderbook')
+  })
+
+  it('resolves an origin with a trailing slash the same way', async () => {
+    const { deps, openedUrls } = resolutionDeps(STREAM_MANIFEST)
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com/' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(openedUrls, ['https://provider.example.com/stream/orderbook'])
+  })
+
+  it('falls back to the only endpoint when there is no stream key', async () => {
+    const { deps, openedUrls } = resolutionDeps({
+      endpoints: { feed: { method: 'GET', path: '/v1/feed' } },
+    })
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(openedUrls, ['https://provider.example.com/v1/feed'])
+  })
+
+  it('errors with every endpoint listed when several exist and none is stream', async () => {
+    const { deps, openedUrls, openSessions } = resolutionDeps({
+      endpoints: {
+        price: { method: 'GET', path: '/price' },
+        quote: { method: 'GET', path: '/quote' },
+        orders: { method: 'POST', path: '/orders' },
+      },
+    })
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, true)
+    const message = errorText(result)
+    assert.ok(message.includes('https://provider.example.com'))
+    for (const path of ['/price', '/quote', '/orders']) {
+      assert.ok(message.includes(path), `error should list ${path}: ${message}`)
+    }
+    assert.deepEqual(openedUrls, [])
+    assert.equal(openSessions.size, 0)
+  })
+
+  it('errors when the manifest lists no endpoints', async () => {
+    const { deps, openedUrls } = resolutionDeps({ endpoints: {} })
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, true)
+    assert.ok(errorText(result).includes('no endpoints'))
+    assert.deepEqual(openedUrls, [])
+  })
+
+  it('errors when the chosen endpoint is not GET', async () => {
+    const { deps, openedUrls } = resolutionDeps({
+      endpoints: { stream: { method: 'POST', path: '/stream/orderbook' } },
+    })
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, true)
+    assert.ok(errorText(result).includes('/stream/orderbook'))
+    assert.deepEqual(openedUrls, [])
+  })
+
+  for (const path of ['https://attacker.example/x', '//attacker.example/x']) {
+    it(`refuses an endpoint path on another origin (${path})`, async () => {
+      const { deps, openedUrls } = resolutionDeps({
+        endpoints: { stream: { method: 'GET', path } },
+      })
+      const result = await handleOpenSession(
+        { url: 'https://provider.example.com' },
+        deps,
+        'secret123',
+      )
+      assert.equal(result.isError, true)
+      assert.deepEqual(openedUrls, [])
+    })
+  }
+
+  it('passes a URL with a path through unchanged without fetching the manifest', async () => {
+    const { deps, manifestUrls, openedUrls } = resolutionDeps(STREAM_MANIFEST)
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com/stream/orderbook' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(openedUrls, ['https://provider.example.com/stream/orderbook'])
+    assert.equal(manifestUrls.length, 0)
+    const body = parseResult(result) as { endpoint_url: string }
+    assert.equal(body.endpoint_url, 'https://provider.example.com/stream/orderbook')
+  })
+
+  it('fetches the manifest once for a bare origin with initial_deposit', async () => {
+    const { deps, manifestUrls, openedUrls } = resolutionDeps({
+      ...STREAM_MANIFEST,
+      pricing: { 'mpp-session': { min_deposit: '1.0' } },
+    })
+    const result = await handleOpenSession(
+      { url: 'https://provider.example.com', initial_deposit: '5.0' },
+      deps,
+      'secret123',
+    )
+    assert.equal(result.isError, undefined)
+    assert.equal(manifestUrls.length, 1)
+    assert.deepEqual(openedUrls, ['https://provider.example.com/stream/orderbook'])
   })
 })
 

@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: 'pnpm'
@@ -35,13 +35,13 @@ jobs:
         run: pnpm --filter @routedock/nulth-sdk build
       - name: Run SDK tests
         run: pnpm --filter @routedock/routedock test
+      # The MCP server (usdcToStroops) and the provider manifest tests
+      # (@routedock/routedock/schema) import the SDK's built dist/. The SDK's
+      # own tests run from source, so nothing above this point builds it.
+      - name: Build sdk (MCP server and provider tests import its built dist)
+        run: pnpm --filter @routedock/routedock build
       - name: Run MCP server tests
         run: pnpm --filter @routedock/mcp-server test
-      # The provider manifest tests import @routedock/routedock/schema, which
-      # resolves to the SDK's built dist/. The SDK's own tests run from source,
-      # so nothing above this point builds it.
-      - name: Build sdk (provider tests import its built schema)
-        run: pnpm --filter @routedock/routedock build
       - name: Run provider-a tests
         run: pnpm --filter provider-a test
       - name: Run provider-b tests
@@ -54,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: 'pnpm'
@@ -66,6 +66,13 @@ jobs:
         run: pnpm --filter @routedock/routedock build
       - name: Build remaining packages
         run: pnpm -r --filter '!@routedock/nulth-sdk' --filter '!@routedock/routedock' build
+      # client, react and provider/hono are documented as Workers/browser-safe.
+      # Fails if a built entry imports a Node built-in (node:fs, node:crypto, ...)
+      # or references Buffer.
+      - name: Check runtime-neutral bundles
+        run: |
+          node scripts/check-runtime-neutral.mjs --self-test
+          node scripts/check-runtime-neutral.mjs
       - name: Check package types (arethetypeswrong)
         run: |
           npx --yes @arethetypeswrong/cli@0.18.5 --pack packages/nulth-sdk
@@ -76,7 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: 'pnpm'
@@ -94,9 +101,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run actionlint
-        uses: reviewdog/action-actionlint@13465d022aa41c282f730be17574b5ce692d0186 # v1.78.1
+        uses: reviewdog/action-actionlint@3cbf14efd750961dba35fccbf00f9e14028cb1f5 # v1.80.2
         with:
           fail_level: error
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Test E2E provider failure diagnostics
+        run: node --test scripts/e2e-provider-logs.test.mjs
       - name: Guard release.yml permissions
         # release.yml has twice regressed to missing the permissions that make
         # Changesets and the release watchdog work (#255, fixed in 8f3d82b).
@@ -122,7 +134,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: 'pnpm'

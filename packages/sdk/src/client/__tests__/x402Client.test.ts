@@ -10,6 +10,7 @@ import type { RouteDockManifest } from '../../types.js'
 import {
   RouteDockFacilitatorError,
   RouteDockManifestError,
+  RouteDockPaymentRejectedError,
   RouteDockPolicyRejectError,
 } from '../../errors.js'
 
@@ -354,7 +355,10 @@ test('X402Client - paid retry returning 402 rejects without a second signature',
     await assert.rejects(
       () => client.pay('https://api.test/paid', manifest),
       (err: unknown) => {
-        assert.ok(err instanceof RouteDockManifestError)
+        assert.ok(err instanceof RouteDockPaymentRejectedError)
+        assert.ok(!(err instanceof RouteDockManifestError))
+        assert.equal(err.status, 402)
+        assert.equal(err.retryable, false)
         return true
       },
     )
@@ -363,6 +367,101 @@ test('X402Client - paid retry returning 402 rejects without a second signature',
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+// ── #558: surface why the provider refused a paid request ────────────────────
+
+/** Drive pay() against a provider whose paid request is answered by `paid()`. */
+async function payAgainstRejection(
+  t: import('node:test').TestContext,
+  paid: () => Response,
+): Promise<{ err: unknown; paidRequests: number; signs: number }> {
+  const client = new X402Client(keypair.secret(), 'testnet', { baseDelayMs: 1, maxDelayMs: 5 })
+  const signCalls = t.mock.method(x402HTTPClient.prototype, 'createPaymentPayload', async () =>
+    makePayload(),
+  )
+  let paidRequests = 0
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    if (headers['PAYMENT-SIGNATURE']) {
+      paidRequests++
+      return paid()
+    }
+    return paymentRequiredResponse()
+  }) as typeof fetch
+  try {
+    let caught: unknown
+    try {
+      await client.pay('https://api.test/paid', manifest)
+    } catch (e) {
+      caught = e
+    }
+    return { err: caught, paidRequests, signs: signCalls.mock.callCount() }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+for (const status of [401, 402]) {
+  test(`X402Client - paid ${status} surfaces the provider's reason on RouteDockPaymentRejectedError`, async (t) => {
+    const { err, paidRequests, signs } = await payAgainstRejection(t, () =>
+      jsonResponse(
+        { error: 'Payment verification failed', reason: 'invalid_exact_stellar_payload_wrong_amount' },
+        status,
+      ),
+    )
+
+    assert.ok(err instanceof RouteDockPaymentRejectedError, String(err))
+    assert.ok(!(err instanceof RouteDockManifestError), 'a payment rejection is not a manifest error')
+    assert.equal(err.code, 'PAYMENT_REJECTED')
+    assert.equal(err.status, status)
+    assert.equal(err.reason, 'invalid_exact_stellar_payload_wrong_amount')
+    assert.equal(err.providerError, 'Payment verification failed')
+    assert.equal(err.retryable, false)
+    assert.match(err.message, new RegExp(`x402 payment failed: HTTP ${status}`))
+    assert.match(err.message, /invalid_exact_stellar_payload_wrong_amount/)
+    assert.equal(paidRequests, 1, 'a rejection is not retried')
+    assert.equal(signs, 1, 'and never re-signed')
+  })
+}
+
+test('X402Client - paid rejection without a JSON body still throws RouteDockPaymentRejectedError', async (t) => {
+  const { err } = await payAgainstRejection(t, () => new Response('<html>nope</html>', { status: 401 }))
+
+  assert.ok(err instanceof RouteDockPaymentRejectedError, String(err))
+  assert.equal(err.status, 401)
+  assert.equal(err.reason, undefined)
+  assert.equal(err.message, 'x402 payment failed: HTTP 401')
+})
+
+test('X402Client - paid rejection with an empty body or odd JSON never throws a parse error', async (t) => {
+  for (const body of ['', 'null', '[]', '"just a string"', '{"reason":42}']) {
+    const { err } = await payAgainstRejection(t, () => new Response(body, { status: 402 }))
+    assert.ok(err instanceof RouteDockPaymentRejectedError, `body ${JSON.stringify(body)}: ${String(err)}`)
+    assert.equal(err.reason, undefined)
+  }
+})
+
+test('X402Client - an oversized provider reason is truncated', async (t) => {
+  const { err } = await payAgainstRejection(t, () => jsonResponse({ reason: 'x'.repeat(10_000) }, 402))
+  assert.ok(err instanceof RouteDockPaymentRejectedError)
+  assert.equal(err.reason?.length, 500)
+})
+
+test('X402Client - a rejection body over the read limit is ignored, not parsed', async (t) => {
+  const { err } = await payAgainstRejection(t, () =>
+    jsonResponse({ reason: 'x'.repeat(100_000) }, 402),
+  )
+  assert.ok(err instanceof RouteDockPaymentRejectedError)
+  assert.equal(err.reason, undefined)
+  assert.equal(err.message, 'x402 payment failed: HTTP 402')
+})
+
+test('X402Client - paid 5xx is still a retryable facilitator error, not a rejection', async (t) => {
+  const { err, paidRequests } = await payAgainstRejection(t, () => new Response('bad', { status: 500 }))
+  assert.ok(err instanceof RouteDockFacilitatorError)
+  assert.ok(paidRequests > 1, 'server errors are retried')
 })
 
 // ── #389: bind the unsigned 402 to the signed manifest ───────────────────────
@@ -526,6 +625,88 @@ test('X402Client - reports the amount actually signed, not the manifest price', 
   try {
     const result = await client.pay('https://api.test/paid', manifest)
     assert.equal(result.amount, '0.005')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+// ── optional pre-sign hook ───────────────────────────────────────────────────
+
+test('X402Client - pre-sign hook rejection aborts before signing', async () => {
+  const { signer, calls } = signerStub()
+  let seen = 0
+  const client = new X402Client(signer, 'testnet', undefined, async (ctx) => {
+    seen++
+    assert.equal(ctx.url, 'https://api.test/paid')
+    assert.equal(ctx.accepts.length, 1)
+    return { approve: false, reason: 'looks_injected' }
+  })
+  let fetchCount = 0
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => {
+    fetchCount++
+    return paymentRequiredResponse()
+  }) as typeof fetch
+
+  try {
+    await assert.rejects(
+      () => client.pay('https://api.test/paid', manifest),
+      (err: unknown) => {
+        assert.ok(err instanceof RouteDockPolicyRejectError)
+        assert.equal(err.reason, 'looks_injected')
+        return true
+      },
+    )
+    assert.equal(seen, 1)
+    assert.equal(calls.length, 0, 'signer must never be asked to sign')
+    assert.equal(fetchCount, 1, 'no settlement request is sent')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('X402Client - pre-sign hook that throws fails closed before signing', async () => {
+  const { signer, calls } = signerStub()
+  const client = new X402Client(signer, 'testnet', undefined, () => {
+    throw new Error('audit service down')
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => paymentRequiredResponse()) as typeof fetch
+
+  try {
+    await assert.rejects(
+      () => client.pay('https://api.test/paid', manifest),
+      (err: unknown) => {
+        assert.ok(err instanceof RouteDockPolicyRejectError)
+        assert.equal(err.reason, 'pre_sign_hook_error')
+        return true
+      },
+    )
+    assert.equal(calls.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('X402Client - approving pre-sign hook runs once and signing proceeds', async (t) => {
+  let hookCalls = 0
+  const client = new X402Client(keypair.secret(), 'testnet', undefined, () => {
+    hookCalls++
+    return { approve: true }
+  })
+  t.mock.method(x402HTTPClient.prototype, 'createPaymentPayload', async () => makePayload())
+  t.mock.method(x402HTTPClient.prototype, 'encodePaymentSignatureHeader', () => ({
+    'PAYMENT-SIGNATURE': 'sig',
+  }))
+  let n = 0
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    n++ === 0 ? paymentRequiredResponse() : jsonResponse({ ok: true })) as typeof fetch
+
+  try {
+    const result = await client.pay('https://api.test/paid', manifest)
+    assert.equal(hookCalls, 1)
+    assert.deepEqual(result.data, { ok: true })
   } finally {
     globalThis.fetch = originalFetch
   }

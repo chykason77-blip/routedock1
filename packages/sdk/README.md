@@ -35,6 +35,15 @@ for await (const update of session.stream()) {
 await session.close() // triggers on-chain settlement
 ```
 
+### Spend cap and other assets
+
+The cap is a single USDC total. If the asset selected for a payment is not
+`spendCap.asset` (for example a provider that prices in XLM), `pay()` and
+`openSession()` throw `RouteDockPolicyRejectError` with reason
+`local_cap_asset_mismatch` before anything is paid, and nothing is added to the
+USDC total. USDC-only providers are unaffected. See
+`docs/MULTI_ASSET_SUPPORT.md`.
+
 ### Durable spend cap
 
 The `spendCap` is enforced via a pluggable `SpendStore` (`read()` / `write()`).
@@ -61,6 +70,19 @@ const client = new RouteDockClient({
   network: 'mainnet',
   spendCap: { daily: '1.00', asset: 'USDC' },
   spendStore: redisSpendStore,
+})
+```
+
+On Node you can use the file-backed store instead. It depends on `node:fs`, so it
+lives in a Node-only entry point and is **not** exported from `/client`:
+
+```ts
+import { RouteDockClient } from '@routedock/routedock/client'
+import { FileSpendStore } from '@routedock/routedock/node' // Node only (node:fs)
+
+const client = new RouteDockClient({
+  // ...
+  spendStore: new FileSpendStore('~/.routedock/spend.json'),
 })
 ```
 
@@ -441,6 +463,26 @@ import from `@routedock/routedock/provider` in a Workers snippet — that's the
 Node-only Express entry point and pulls in dependencies (like `express`) that
 don't run on Workers.
 
+### Runtime-neutral entry points
+
+`@routedock/routedock/client`, `/react` and `/provider/hono` use only
+Web-standard APIs. They run in browsers, Cloudflare Workers (no `nodejs_compat`
+needed for this package), Bun, Deno and Node, and contain no `node:*` imports or
+`Buffer` references. CI enforces this (`node scripts/check-runtime-neutral.mjs`)
+against the built output.
+
+Anything that needs Node built-ins is kept out of those entries:
+
+| Import | Runtime | Notes |
+| --- | --- | --- |
+| `@routedock/routedock/client`, `/react`, `/provider/hono` | any | runtime-neutral |
+| `@routedock/routedock/node` | Node only | `FileSpendStore` (`node:fs`) |
+| `@routedock/routedock/provider`, `/provider/fastify` | Node only | Express/Fastify adapters |
+| `@routedock/routedock` | Node | full SDK, includes `FileSpendStore` |
+
+Third-party dependencies are outside this guarantee: for example `mppx` imports
+`node:util`, so a Worker that uses it can still need `nodejs_compat`.
+
 ## React Integration
 
 > **Warning:** These hooks create a RouteDockClient in the browser, so the wallet secret and any commitmentSecret are readable by anyone who loads the page.
@@ -572,6 +614,7 @@ import {
   RouteDockError,
   RouteDockFacilitatorError,
   RouteDockManifestError,
+  RouteDockPaymentRejectedError,
   RouteDockPolicyRejectError,
 } from '@routedock/sdk/client'
 
@@ -587,6 +630,9 @@ try {
 } catch (err) {
   if (err instanceof RouteDockPolicyRejectError) {
     console.error('Spend cap exceeded:', err.reason)
+  } else if (err instanceof RouteDockPaymentRejectedError) {
+    // The provider refused the signed payment; `reason` is its explanation.
+    console.error(`Payment rejected (HTTP ${err.status}):`, err.reason ?? err.providerError)
   } else if (err instanceof RouteDockFacilitatorError) {
     console.error(`Facilitator HTTP ${err.status} (retryable=${err.retryable})`)
   } else if (err instanceof RouteDockManifestError) {
@@ -604,6 +650,7 @@ try {
 | `RouteDockManifestError` | no | Invalid manifest, missing pricing fields |
 | `RouteDockNoSupportedModeError` | no | Provider has no compatible payment mode |
 | `RouteDockFacilitatorError` | yes | Facilitator/provider 429 or 5xx |
+| `RouteDockPaymentRejectedError` | no | Provider refused the signed paid request (HTTP 401/402/other 4xx); `status` and `reason` carry why |
 | `RouteDockNetworkError` | yes | Timeouts, connection failures |
 | `RouteDockSignatureError` | no | Signing or commitment failure |
 | `RouteDockVoucherMonotonicityError` | no | Non-increasing voucher amount |

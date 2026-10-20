@@ -16,7 +16,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import assert from 'node:assert/strict'
 import { Keypair } from '@stellar/stellar-sdk'
 import { RouteDockClient, usdcToMicros } from '../RouteDockClient.js'
-import { InMemorySpendStore, FileSpendStore } from '../../store/SpendStore.js'
+import { InMemorySpendStore } from '../../store/SpendStore.js'
+import { FileSpendStore } from '../../store/FileSpendStore.js'
 import { RouteDockPolicyRejectError, RouteDockManifestError } from '../../errors.js'
 import { signManifest } from '../../manifest/sign.js'
 import type { RouteDockManifest, PaymentResult } from '../../types.js'
@@ -449,7 +450,7 @@ function fakeResult(mode: string, amount: string): PaymentResult {
   })
 
   // _recordSessionSpend is private; access via any for testing
-  const record = (amount: string) => (client as any)._recordSessionSpend(amount, 'https://api.test.com') as Promise<void>
+  const record = (amount: string) => (client as any)._recordSessionSpend(amount, 'https://api.test.com', 'USDC') as Promise<void>
 
   // Record 5 vouchers at 0.0001 each (total 0.0005 — at cap)
   for (let i = 0; i < 5; i++) {

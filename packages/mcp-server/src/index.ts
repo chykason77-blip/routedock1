@@ -7,7 +7,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { RouteDockClient, FileSpendStore } from '@routedock/routedock'
+import { RouteDockClient } from '@routedock/routedock'
+import { FileSpendStore } from '@routedock/routedock/node'
 import type { SessionHandle } from '@routedock/routedock'
 import { createClient } from '@supabase/supabase-js'
 import { TOOLS } from './tools.js'

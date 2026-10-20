@@ -1,6 +1,6 @@
 import { Keypair, Horizon } from '@stellar/stellar-sdk'
 import { fetchManifest, selectMode, invalidateManifest as evictManifest, assertManifestValid, assertEndpointActive, type ModeSelectOptions, type RouteDockLogger } from './ModeRouter.js'
-import { X402Client } from './x402Client.js'
+import { X402Client, type X402PreSignHook } from './x402Client.js'
 import { MppChargeClient } from './MppChargeClient.js'
 import { MppSessionClient } from './MppSessionClient.js'
 import { prepareNulthSigner, NulthPolicyError, type NulthVaultConfig } from './NulthVault.js'
@@ -18,8 +18,20 @@ import { selectAsset } from '../internal/assetUtils.js'
 const _secrets = new WeakMap<RouteDockClient, string>()
 
 export interface SpendCap {
-  /** Maximum total USDC spend per day (decimal string, e.g. "1.00") */
+  /**
+   * Maximum total spend per day (decimal string, e.g. "1.00"), denominated in
+   * `asset`.
+   *
+   * The accumulator is a single USDC number, so the cap only ever counts USDC.
+   * When a cap is configured, a payment whose selected asset (see
+   * `selectAsset`) is anything other than `asset` is rejected before any
+   * trustline check, network call or on-chain deposit with
+   * `RouteDockPolicyRejectError('local_cap_asset_mismatch')`. Amounts in other
+   * assets are never added to the USDC total, since 5 XLM is not 5 USDC.
+   * Manifests that only price in USDC behave exactly as before.
+   */
   daily: string
+  /** The only asset this cap can account for. */
   asset: 'USDC'
   /**
    * Optional per-endpoint daily spend caps, keyed by endpoint origin URL
@@ -102,6 +114,11 @@ export interface RouteDockClientConfig {
   commitmentSecret?: string | undefined
   /** Retry policy for transient failures (network, facilitator 5xx). */
   retryPolicy?: RetryPolicy
+  /**
+   * Optional guard run before an x402 payment is signed. Rejecting or throwing
+   * aborts the payment with `RouteDockPolicyRejectError`. x402 mode only.
+   */
+  preSignHook?: X402PreSignHook
   /**
    * Durable backing store for the daily spend cap accumulator. Defaults to a
    * non-durable in-memory store that resets on restart (with a startup warning).
@@ -229,7 +246,7 @@ export class RouteDockClient {
     // Carry the client's logger into retry diagnostics so a consumer that
     // silences the SDK silences the retry path too.
     const retryPolicy = this.logger ? { ...this.retryPolicy, logger: this.logger } : this.retryPolicy
-    this.x402 = new X402Client(secretKey, this.network, retryPolicy)
+    this.x402 = new X402Client(secretKey, this.network, retryPolicy, config.preSignHook)
     this.charge = new MppChargeClient(this.keypair, this.network, retryPolicy)
     this.session = new MppSessionClient(this.keypair, this.network, retryPolicy, undefined, this.logger)
   }
@@ -354,6 +371,9 @@ export class RouteDockClient {
 
     const selectedAsset = selectAsset(manifest, mode, url).asset
 
+    // Fail closed before any network call if the cap can't account for this asset.
+    this._assertCapAsset(selectedAsset)
+
     await this._checkTrustline(manifest, selectedAsset)
 
     let amount: string
@@ -374,7 +394,7 @@ export class RouteDockClient {
     }
 
     // Reserve before dispatching so no path can spend outside the cap.
-    const reserveId = await this._checkAndReserveSpend(amount, baseUrl)
+    const reserveId = await this._checkAndReserveSpend(amount, baseUrl, selectedAsset)
 
     let result: PaymentResult
     try {
@@ -510,11 +530,31 @@ export class RouteDockClient {
     }
 
     const endpointKey = new URL(url).origin
-    const onSpend = this.spendCap
-      ? (amount: string) => this._recordSessionSpend(amount, endpointKey)
-      : undefined
+
+    // Reject before the channel opens (opening deposits on-chain), so a
+    // non-capped asset never gets as far as locking funds.
+    let onSpend: ((amount: string) => Promise<void>) | undefined
+    if (this.spendCap) {
+      const sessionAsset = selectAsset(manifest, mode, url).asset
+      this._assertCapAsset(sessionAsset)
+      onSpend = (amount: string) => this._recordSessionSpend(amount, endpointKey, sessionAsset)
+    }
 
     return this.session.openSession(url, manifest, secret, options, onSpend)
+  }
+
+  /**
+   * The local cap accumulates one USDC total. Refuse to count any other asset
+   * against it (or let it through uncounted) when a cap is configured.
+   */
+  private _assertCapAsset(asset: string): void {
+    if (this.spendCap && asset !== this.spendCap.asset) {
+      throw new RouteDockPolicyRejectError('local_cap_asset_mismatch', {
+        cause: new Error(
+          `spendCap is denominated in ${this.spendCap.asset} but the selected payment asset is ${asset}`,
+        ),
+      })
+    }
   }
 
   /**
@@ -523,8 +563,8 @@ export class RouteDockClient {
    * as discrete pay() calls. Returns a commit function to clean up the
    * reservation after the voucher fetch succeeds.
    */
-  private async _recordSessionSpend(amount: string, endpointKey: string): Promise<void> {
-    const reserveId = await this._checkAndReserveSpend(amount, endpointKey)
+  private async _recordSessionSpend(amount: string, endpointKey: string, asset: string): Promise<void> {
+    const reserveId = await this._checkAndReserveSpend(amount, endpointKey, asset)
     if (reserveId) {
       // For sessions, commit immediately — the spend is final once the
       // voucher is issued. No rollback path on voucher fetch failure since
@@ -569,8 +609,9 @@ export class RouteDockClient {
    * Both limits are independent: a payment is only reserved after **both** pass.
    * All spend (regardless of endpoint) counts toward the global accumulator.
    */
-  private async _checkAndReserveSpend(amount: string, endpointKey: string): Promise<string> {
+  private async _checkAndReserveSpend(amount: string, endpointKey: string, asset: string): Promise<string> {
     if (!this.spendCap) return ''
+    this._assertCapAsset(asset)
 
     return this._withSpendMutex(async () => {
       const today = new Date().toISOString().slice(0, 10)
