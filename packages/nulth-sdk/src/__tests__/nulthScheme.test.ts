@@ -231,12 +231,15 @@ function nulthSigner(): NulthSignerConfig {
     Networks.TESTNET,
   )
   const signature = signed.credentials().address().signature()
-  const [first] = scValToNative(signature) as Array<{
-    public_key: Uint8Array
-    signature: Buffer
-  }>
+  const first = (
+    scValToNative(signature) as Array<{
+      public_key: Uint8Array
+      signature: Buffer
+    }>
+  )[0]
+  assert.ok(first, 'the ed25519 signature vec holds an entry')
   assert.equal(
-    StrKey.encodeEd25519PublicKey(first.public_key),
+    StrKey.encodeEd25519PublicKey(Buffer.from(first.public_key)),
     keypair.publicKey(),
     'ed25519 signature keeps public_key',
   )

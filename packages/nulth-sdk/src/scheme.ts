@@ -1,5 +1,6 @@
 import { Address, hash, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk'
 import type { Keypair, SigningCallback } from '@stellar/stellar-sdk'
+import { base64ToBytes, bytesToBase64, utf8ToBytes } from './encoding.js'
 import { decodeAuthSignature } from './proof.js'
 import type { NulthAuthSignature, NulthProof } from './types.js'
 
@@ -61,7 +62,7 @@ export function nulthProofScVal(signature: NulthAuthSignature): xdr.ScVal {
       {
         nulth: signature.nulth,
         version: proof.version,
-        proof: Buffer.from(proof.proof, 'base64'),
+        proof: base64ToBytes(proof.proof),
         auth_digest: inputs.authDigest,
         allowlist_commitment: inputs.allowlistCommitment,
         cap_commitment: inputs.capCommitment,
@@ -85,7 +86,7 @@ function requiredBytes(value: unknown, field: string): string {
   if (!(value instanceof Uint8Array)) {
     throw new TypeError(`Nulth signature field ${field} is not bytes`)
   }
-  return Buffer.from(value).toString('base64')
+  return bytesToBase64(value)
 }
 
 function requiredNumber(value: unknown, field: string): number {
@@ -180,7 +181,7 @@ export async function nulthAuthorizeEntry(
   credentials.signatureExpirationLedger(validUntilLedgerSeq)
   const preimage = xdr.HashIdPreimage.envelopeTypeSorobanAuthorization(
     new xdr.HashIdPreimageSorobanAuthorization({
-      networkId: hash(Buffer.from(networkPassphrase)),
+      networkId: hash(utf8ToBytes(networkPassphrase) as Parameters<typeof hash>[0]),
       nonce: credentials.nonce(),
       invocation: clone.rootInvocation(),
       signatureExpirationLedger: credentials.signatureExpirationLedger(),
@@ -197,7 +198,7 @@ export async function nulthAuthorizeEntry(
  * `{ signature, publicKey }` pair). Only raw bytes carry a Nulth envelope.
  */
 function envelopeBase64(signed: Awaited<ReturnType<SigningCallback>>): string {
-  if (signed instanceof Uint8Array) return Buffer.from(signed).toString('base64')
-  if (signed instanceof ArrayBuffer) return Buffer.from(new Uint8Array(signed)).toString('base64')
+  if (signed instanceof Uint8Array) return bytesToBase64(signed)
+  if (signed instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(signed))
   throw new TypeError('Nulth signing callback must return the zk-v1 envelope as bytes')
 }
