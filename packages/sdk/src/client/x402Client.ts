@@ -1,5 +1,4 @@
 import { createEd25519Signer, type ClientStellarSigner } from '@x402/stellar'
-import { ExactStellarScheme } from '@x402/stellar/exact/client'
 import { x402Client, x402HTTPClient } from '@x402/core/client'
 import {
   decodePaymentRequiredHeader,
@@ -15,6 +14,7 @@ import {
 import { stroopsToUsdc } from '../internal/usdc.js'
 import { withRetry, type RetryPolicy } from '../internal/retry.js'
 import { checkX402Accept, filterX402Accepts, type Caip2Network } from './challenge.js'
+import { selectStellarScheme } from './nulthScheme.js'
 
 type Network = 'testnet' | 'mainnet'
 
@@ -42,7 +42,7 @@ export class X402Client {
       typeof secretKeyOrSigner === 'string'
         ? createEd25519Signer(secretKeyOrSigner, caip2)
         : secretKeyOrSigner
-    const scheme = new ExactStellarScheme(this.signer)
+    const scheme = selectStellarScheme(this.signer)
     const core = new x402Client()
     core.register(caip2, scheme)
     this.httpClient = new x402HTTPClient(core)

@@ -3,11 +3,17 @@
  *
  * @routedock/nulth-sdk is a workspace dependency, so usdcToStroops
  * is imported from @routedock/nulth-sdk via ../internal/usdc.js.
+ *
+ * The signer marker that identifies a Nulth payer to the x402 scheme client is
+ * imported rather than inlined: it has to be the same `Symbol.for` key the
+ * canonical signer sets, or the two copies (#575) would disagree about who is
+ * paying with a proof.
  */
 import { createHash } from 'node:crypto'
 import { Address, rpc, hash, scValToNative, xdr } from '@stellar/stellar-sdk'
 import type { ClientStellarSigner } from '@x402/stellar'
 import type { SignAuthEntry } from '@stellar/stellar-sdk/contract'
+import { NULTH_SIGNATURE_VERSION, NULTH_SIGNER_MARKER } from '@routedock/nulth-sdk'
 import type { RouteDockManifest, PaymentMode, VaultMode } from '../types.js'
 import { RouteDockManifestError } from '../errors.js'
 import { usdcToStroops } from '../internal/usdc.js'
@@ -301,6 +307,7 @@ class NulthClient {
 export interface NulthStellarSigner {
   address: string
   signAuthEntry: SignAuthEntry
+  readonly [NULTH_SIGNER_MARKER]: typeof NULTH_SIGNATURE_VERSION
 }
 
 export interface NulthSignerConfig extends NulthClientConfig {
@@ -312,6 +319,7 @@ export function createNulthSigner(config: NulthSignerConfig): NulthStellarSigner
   const nulthAccount = config.nulthAccount
   return {
     address: nulthAccount,
+    [NULTH_SIGNER_MARKER]: NULTH_SIGNATURE_VERSION,
     signAuthEntry: async (authEntry) => {
       const ctx = config.paymentContext
       if (!ctx) throw new Error('Nulth paymentContext must be set before signing')
