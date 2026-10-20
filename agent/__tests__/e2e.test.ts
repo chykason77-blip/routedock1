@@ -72,16 +72,48 @@ async function runTests(): Promise<void> {
     process.env['ROUTEDOCK_SPEND_STORE_PATH'] ??
     path.join(os.homedir(), '.routedock', 'spend.json')
 
+  // Capture SDK debug lines so an x402 failure can be diagnosed from the
+  // test output alone (#553: intermittent "x402 should have txHash").
+  const sdkDebugLines: string[] = []
+  const sdkLogger = (level: string, msg: string, fields?: Record<string, unknown>): void => {
+    const line = `[${level}] ${msg}${fields ? ` ${JSON.stringify(fields)}` : ''}`
+    sdkDebugLines.push(line)
+    if (process.env['E2E_SDK_DEBUG'] === 'true') log('sdk', line)
+  }
+
   const client = new RouteDockClient({
     wallet: keypair,
     network: STELLAR_NETWORK,
     spendCap: { daily: AGENT_DAILY_CAP_USDC, asset: 'USDC' },
     spendStore: new FileSpendStore(spendStorePath),
     commitmentSecret: COMMITMENT_SECRET || undefined,
+    logger: sdkLogger,
   })
 
   // ── Test 1: x402 discrete query ────────────────────────────────────────────
   log('x402', 'Running x402 discrete query test...')
+
+  // Unpaid probe recorded up front: when the settlement below misbehaves, the
+  // probe status and headers distinguish "paywall answered 2xx" (free path,
+  // amount '0') from "paid 2xx without a usable X-Payment-Response".
+  let probeStatus = 'unavailable'
+  let probeHeaders: Record<string, string> = {}
+  try {
+    const probe = await fetch(`${PROVIDER_A_URL}/price`, {
+      headers: { 'X-Preferred-Mode': 'x402' },
+    })
+    probeStatus = String(probe.status)
+    probeHeaders = Object.fromEntries(probe.headers.entries())
+  } catch (err) {
+    probeStatus = `fetch failed: ${err instanceof Error ? err.message : String(err)}`
+  }
+
+  const dumpX402Diagnostics = (): void => {
+    log('x402', `unpaid probe status: ${probeStatus}`)
+    log('x402', `unpaid probe headers: ${JSON.stringify(probeHeaders)}`)
+    log('x402', `SDK debug lines (${sdkDebugLines.length}):`)
+    for (const line of sdkDebugLines) log('x402', `  ${line}`)
+  }
 
   let x402Result: any
   try {
@@ -100,14 +132,32 @@ async function runTests(): Promise<void> {
       )
       return
     }
+    dumpX402Diagnostics()
     throw err
   }
 
   assert(x402Result, 'x402 result should exist')
-  assert.equal(x402Result.mode, 'x402', `expected mode x402, got ${x402Result.mode}`)
-  assert(x402Result.txHash, 'x402 should have txHash')
-  assert(x402Result.data, 'x402 should have response data')
-  assert(x402Result.amount, 'x402 should have amount paid')
+  try {
+    assert.equal(x402Result.mode, 'x402', `expected mode x402, got ${x402Result.mode}`)
+    // A settled x402 payment must carry a real transaction hash. An empty
+    // string means the provider served a settle that never landed, and
+    // amount '0' means the paywall was never engaged — both are failures,
+    // not successes to be logged (#553).
+    assert(
+      x402Result.txHash !== null && x402Result.txHash !== undefined && x402Result.txHash !== '',
+      `x402 should have a non-empty txHash (got ${JSON.stringify(x402Result.txHash)})`,
+    )
+    assert(
+      x402Result.amount !== undefined && x402Result.amount !== null && x402Result.amount !== '0',
+      `x402 amount should be a paid amount, not '0' (free response), got ${JSON.stringify(x402Result.amount)}`,
+    )
+    assert(x402Result.data, 'x402 should have response data')
+    assert(x402Result.amount, 'x402 should have amount paid')
+  } catch (assertErr) {
+    log('x402', `result: mode=${x402Result.mode} amount=${x402Result.amount} txHash=${JSON.stringify(x402Result.txHash)}`)
+    dumpX402Diagnostics()
+    throw assertErr
+  }
   log('x402', `✓ mode=${x402Result.mode} amount=${x402Result.amount} USDC`)
   log('x402', `✓ txHash=${x402Result.txHash}`)
 
