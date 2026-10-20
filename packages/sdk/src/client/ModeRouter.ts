@@ -22,6 +22,9 @@ const validator = new Validator(schema as unknown as Schema, '7')
 
 const SDK_VERSION = pkg.version as string
 
+/** Highest manifest schema major version this client understands. */
+const SUPPORTED_MANIFEST_MAJOR = 1
+
 function parseMajorMinor(version: string): [number, number] {
   const parts = version.split('.')
   return [Number.parseInt(parts[0] ?? '0', 10), Number.parseInt(parts[1] ?? '0', 10)]
@@ -38,6 +41,21 @@ function assertClientVersionSupported(manifest: RouteDockManifest, baseUrl: stri
   if (minVersion && isVersionBelow(SDK_VERSION, minVersion)) {
     throw new RouteDockClientVersionError(
       `SDK version ${SDK_VERSION} is below the minimum required version ${minVersion} for provider at ${baseUrl}. Please upgrade the SDK.`,
+    )
+  }
+}
+
+/**
+ * Refuse a manifest whose schema major version is newer than this client
+ * understands. Minor bumps within a supported major are additive, so "1.1"
+ * and "1.3" keep working; a major bump can redefine existing field names, and
+ * reading one with 1.x meanings would route payments on misunderstood fields.
+ */
+function assertManifestVersionSupported(manifest: RouteDockManifest, baseUrl: string): void {
+  const [major] = parseMajorMinor(manifest.routedock)
+  if (major > SUPPORTED_MANIFEST_MAJOR) {
+    throw new RouteDockClientVersionError(
+      `Manifest version ${manifest.routedock} from provider at ${baseUrl} has schema major version ${major}, which is newer than the highest version this SDK supports (${SUPPORTED_MANIFEST_MAJOR}.x). Please upgrade the SDK.`,
     )
   }
 }
@@ -314,6 +332,7 @@ export async function fetchManifest(
     // different anchor must still have the binding enforced.
     verifyManifestSignature(cached.manifest, expectedPayee)
     assertClientVersionSupported(cached.manifest, baseUrl)
+    assertManifestVersionSupported(cached.manifest, baseUrl)
     assertManifestValid(cached.manifest, baseUrl)
     assertManifestActive(cached.manifest, baseUrl)
     return cached.manifest
@@ -369,6 +388,7 @@ export async function fetchManifest(
     assertManifestValid(manifest, baseUrl)
     verifyManifestSignature(manifest, expectedPayee)
     assertClientVersionSupported(manifest, baseUrl)
+    assertManifestVersionSupported(manifest, baseUrl)
     assertManifestActive(manifest, baseUrl)
     manifestCache.set(baseUrl, { manifest, fetchedAt: Date.now(), expiresAt })
     return manifest

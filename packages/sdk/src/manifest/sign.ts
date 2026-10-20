@@ -21,10 +21,14 @@
  * Providers call `signManifest` once at startup to embed the signature.
  */
 
-import { createHash } from 'node:crypto'
 import { Keypair } from '@stellar/stellar-sdk'
+import { base64ToBytes, bytesToBase64, utf8ToBytes } from '../internal/encoding.js'
+import { sha256 } from '../internal/hash.js'
 import type { RouteDockManifest } from '../types.js'
 import { RouteDockSignatureError } from '../errors.js'
+
+/** Byte type accepted by stellar-sdk's Keypair (declared as Buffer; any Uint8Array works at runtime). */
+type KeypairBytes = Parameters<Keypair['sign']>[0]
 
 export const MANIFEST_SIGNATURE_VERSION = '2' as const
 
@@ -47,11 +51,11 @@ function canonicalize(value: JsonValue): JsonValue {
 }
 
 /** Produce the canonical SHA-256 digest of the manifest (signature field excluded). */
-export function manifestDigest(manifest: RouteDockManifest): Buffer {
+export function manifestDigest(manifest: RouteDockManifest): Uint8Array {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { signature: _omit, ...rest } = manifest as RouteDockManifest & { signature?: string }
   const canonical = JSON.stringify(canonicalize(rest as unknown as JsonValue))
-  return createHash('sha256').update(canonical, 'utf8').digest()
+  return sha256(utf8ToBytes(canonical))
 }
 
 /**
@@ -68,8 +72,8 @@ export function signManifest(
     signature_version: MANIFEST_SIGNATURE_VERSION,
   }
   const digest = manifestDigest(versionedManifest)
-  const sig = keypair.sign(digest)
-  return { ...versionedManifest, signature: Buffer.from(sig).toString('base64') }
+  const sig = keypair.sign(digest as KeypairBytes)
+  return { ...versionedManifest, signature: bytesToBase64(sig) }
 }
 
 /**
@@ -108,16 +112,16 @@ export function verifyManifestSignature(
 
   const keypair = Keypair.fromPublicKey(manifest.payee)
   const digest = manifestDigest(manifest)
-  let sigBytes: Buffer
+  let sigBytes: Uint8Array
   try {
-    sigBytes = Buffer.from(manifest.signature, 'base64')
+    sigBytes = base64ToBytes(manifest.signature)
   } catch {
     throw new RouteDockSignatureError('Manifest signature is not valid base64')
   }
 
   let valid = false
   try {
-    valid = keypair.verify(digest, sigBytes)
+    valid = keypair.verify(digest as KeypairBytes, sigBytes as KeypairBytes)
   } catch {
     throw new RouteDockSignatureError(
       `Manifest signature verification failed for payee ${manifest.payee}`,

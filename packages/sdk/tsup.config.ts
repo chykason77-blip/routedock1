@@ -10,6 +10,7 @@ export default defineConfig({
     'provider/hono': 'src/provider/hono.ts',
     'provider/fastify': 'src/provider/fastify.ts',
     schema: 'src/schema.ts',
+    node: 'src/node.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,

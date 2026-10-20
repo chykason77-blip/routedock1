@@ -1,11 +1,18 @@
-import { createHash } from 'node:crypto'
 import { Address, hash, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { NulthPolicyError, type PaymentAuthContext } from './types.js'
+import {
+  base64ToBytes,
+  bytesToBase64,
+  bytesToHex,
+  bytesToUtf8,
+  sha256Bytes,
+  sha512Bytes,
+  utf8ToBytes,
+} from './encoding.js'
 
 /** SHA-256 hex digest */
-export function sha256Hex(data: Buffer | string): string {
-  const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
-  return createHash('sha256').update(buf).digest('hex')
+export function sha256Hex(data: Uint8Array | string): string {
+  return bytesToHex(sha256Bytes(data))
 }
 
 /** Commitment to the daily cap — cap value never appears on-chain */
@@ -31,7 +38,7 @@ export function dayBucket(ledgerSequence: number): number {
 
 /** Auth digest bound into the ZK proof (mirrors OZ smart account binding) */
 export function authDigestFromEntry(authEntryBase64: string): string {
-  const entryHash = hash(Buffer.from(authEntryBase64, 'base64'))
+  const entryHash = hash(base64ToBytes(authEntryBase64) as Parameters<typeof hash>[0])
   return sha256Hex(entryHash)
 }
 
@@ -136,7 +143,7 @@ export const DEFAULT_PROVER: ProverBackend = 'mock'
  * @internal
  */
 export function insecureMockProof(preimage: string): string {
-  return createHash('sha512').update(`nulth:${preimage}`).digest('base64')
+  return bytesToBase64(sha512Bytes(`nulth:${preimage}`))
 }
 
 /** Encode proof as the Soroban auth signature Val (base64 JSON) */
@@ -145,12 +152,12 @@ export function encodeAuthSignature(proof: import('./types.js').NulthProof): str
     nulth: 'zk-v1',
     proof,
   }
-  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
+  return bytesToBase64(utf8ToBytes(JSON.stringify(payload)))
 }
 
 /** Decode an auth signature produced by {@link encodeAuthSignature} */
 export function decodeAuthSignature(encoded: string): import('./types.js').NulthAuthSignature {
-  const raw = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as unknown
+  const raw = JSON.parse(bytesToUtf8(base64ToBytes(encoded))) as unknown
   if (
     typeof raw !== 'object' ||
     raw === null ||

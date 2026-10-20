@@ -12,6 +12,7 @@
 import { Keypair } from '@stellar/stellar-sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { usdcToStroops } from '../internal/usdc.js'
+import { hexToBytes } from '../internal/encoding.js'
 import { channelAuthorizer, formatMppError } from './mppCompatibility.js'
 import { resolveLogger, type RouteDockLogger } from '../internal/logger.js'
 
@@ -25,7 +26,7 @@ const MPP_NETWORK: Record<Network, 'stellar:testnet' | 'stellar:pubnet'> = {
 type ChannelCloseFn = (args: {
   channel: string
   amount: bigint
-  signature: Buffer
+  signature: Uint8Array
   feePayer: { envelopeSigner: Keypair }
   network: 'stellar:testnet' | 'stellar:pubnet'
 }) => Promise<string>
@@ -110,7 +111,7 @@ export async function reconcileAbandonedSessions(
         }
 
         const closeAmount = decimalToStroops(cumulative_amount)
-        const closeSig = Buffer.from(last_signature, 'hex')
+        const closeSig = hexToBytes(last_signature)
 
         // Broadcast channel close transaction
         const closeFn: ChannelCloseFn =

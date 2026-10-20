@@ -8,8 +8,10 @@ import {
 import type { RouteDockManifest, PaymentResult } from '../types.js'
 import {
   RouteDockManifestError,
+  RouteDockPolicyRejectError,
   RouteDockSignatureError,
   httpStatusToError,
+  paymentRejectedError,
   wrapFetchError,
 } from '../errors.js'
 import { stroopsToUsdc } from '../internal/usdc.js'
@@ -17,6 +19,7 @@ import { readSettleResult } from '../internal/settleResult.js'
 import { withRetry, type RetryPolicy } from '../internal/retry.js'
 import type { RouteDockLogger } from '../internal/logger.js'
 import { checkX402Accept, filterX402Accepts, type Caip2Network } from './challenge.js'
+import type { PaymentRequirements } from '@x402/core/types'
 
 type Network = 'testnet' | 'mainnet'
 
@@ -24,6 +27,29 @@ const CAIP2: Record<Network, Caip2Network> = {
   testnet: 'stellar:testnet',
   mainnet: 'stellar:pubnet',
 }
+
+/** What an {@link X402PreSignHook} sees: the payment about to be signed. */
+export interface X402PreSignContext {
+  /** The resource being paid for. */
+  readonly url: string
+  /** The signed manifest the challenge was already bound to. */
+  readonly manifest: RouteDockManifest
+  /** The challenge entries that passed manifest binding — the signer picks from these. */
+  readonly accepts: readonly PaymentRequirements[]
+}
+
+/** Verdict returned by an {@link X402PreSignHook}. */
+export type X402PreSignDecision = { approve: true } | { approve: false; reason?: string }
+
+/**
+ * Optional guard run once per `pay()`, after the 402 challenge has been bound to
+ * the manifest and immediately before anything is signed. Use it to plug in an
+ * external or custom audit. Rejecting — or throwing — aborts before signing
+ * (fail closed) with `RouteDockPolicyRejectError`.
+ */
+export type X402PreSignHook = (
+  ctx: X402PreSignContext,
+) => X402PreSignDecision | Promise<X402PreSignDecision>
 
 /** Outcome of the retried unpaid probe. */
 type ProbeOutcome =
@@ -39,7 +65,7 @@ export class X402Client {
     secretKeyOrSigner: string | ClientStellarSigner,
     private readonly network: Network,
     private readonly retryPolicy?: RetryPolicy,
-    logger?: RouteDockLogger,
+    private readonly preSignHook?: X402PreSignHook,
   ) {
     const caip2 = CAIP2[network]
     this.signer =
@@ -55,7 +81,7 @@ export class X402Client {
 
   /** Replace signer (e.g. swap to Nulth ZK account payer before pay) */
   withSigner(signer: ClientStellarSigner): X402Client {
-    return new X402Client(signer, this.network, this.retryPolicy, this.logger)
+    return new X402Client(signer, this.network, this.retryPolicy, this.preSignHook)
   }
 
   async pay(url: string, manifest: RouteDockManifest): Promise<PaymentResult> {
@@ -143,6 +169,20 @@ export class X402Client {
       throw checkX402Accept(firstAccept, manifest, caip2, pricing.amount)
     }
 
+    // Optional pre-sign audit. Runs once, before signing; never on retries.
+    if (this.preSignHook) {
+      let decision: X402PreSignDecision
+      try {
+        decision = await this.preSignHook({ url, manifest, accepts: allowed })
+      } catch (err) {
+        throw new RouteDockPolicyRejectError('pre_sign_hook_error', { cause: err })
+      }
+      if (!decision || decision.approve !== true) {
+        const reason = decision && decision.approve === false ? decision.reason : undefined
+        throw new RouteDockPolicyRejectError(reason ?? 'pre_sign_rejected')
+      }
+    }
+
     // Phase 3: sign exactly once per pay() call.
     let paymentPayload
     try {
@@ -182,7 +222,7 @@ export class X402Client {
             response,
           )
         }
-        throw new RouteDockManifestError(`x402 payment failed: HTTP ${response.status}`)
+        throw await paymentRejectedError('x402 payment failed', response.status, response)
       }
 
       return response

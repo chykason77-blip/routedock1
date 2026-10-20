@@ -39,6 +39,11 @@ pnpm --filter @routedock/nulth-sdk build >/dev/null || fail "@routedock/nulth-sd
 pnpm --filter @routedock/routedock build >/dev/null || fail "@routedock/routedock failed to build"
 echo "  ok"
 
+step "runtime-neutral bundles"
+# client, react and provider/hono must not reach node:* built-ins or Buffer.
+node scripts/check-runtime-neutral.mjs --self-test >/dev/null && node scripts/check-runtime-neutral.mjs \
+  || fail "a runtime-neutral entry imports a Node built-in or Buffer (see above)"
+
 step "typecheck all packages"
 pnpm -r typecheck || fail "typecheck failed"
 

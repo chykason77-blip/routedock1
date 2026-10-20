@@ -8,6 +8,7 @@ import Ajv from 'ajv'
 import addFormats from 'ajv-formats'
 import { Keypair } from '@stellar/stellar-sdk'
 import { signManifest, verifyManifestSignature, manifestDigest } from '../manifest/sign.js'
+import { bytesToHex } from '../internal/encoding.js'
 import { RouteDockSignatureError } from '../errors.js'
 import type { RouteDockManifest } from '../types.js'
 import schema from '../schemas/routedock.schema.json' with { type: 'json' }
@@ -72,7 +73,7 @@ describe('signManifest', () => {
     const withoutSig = { ...baseManifest, signature_version: '2' as const }
     const d1 = manifestDigest(withSig as RouteDockManifest)
     const d2 = manifestDigest(withoutSig)
-    assert.equal(d1.toString('hex'), d2.toString('hex'))
+    assert.equal(bytesToHex(d1), bytesToHex(d2))
   })
 
   it('produces the same digest regardless of nested object insertion order', () => {
@@ -88,8 +89,8 @@ describe('signManifest', () => {
       },
     }
     assert.equal(
-      manifestDigest(baseManifest).toString('hex'),
-      manifestDigest(reordered).toString('hex'),
+      bytesToHex(manifestDigest(baseManifest)),
+      bytesToHex(manifestDigest(reordered)),
     )
   })
 })

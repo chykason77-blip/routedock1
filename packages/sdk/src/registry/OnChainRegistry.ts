@@ -1,4 +1,5 @@
 import { Horizon } from '@stellar/stellar-sdk'
+import { base64ToUtf8 } from '../internal/encoding.js'
 
 export interface OnChainProviderInfo {
   account: string
@@ -16,10 +17,7 @@ function tryDecodeBase64(value: string): string {
     return value
   }
   try {
-    const decoded =
-      typeof Buffer !== 'undefined'
-        ? Buffer.from(value, 'base64').toString('utf-8')
-        : atob(value)
+    const decoded = base64ToUtf8(value)
     if (decoded.length > 0 && decoded !== value) return decoded
   } catch {
     // not valid base64 — return as-is

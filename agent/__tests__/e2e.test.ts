@@ -26,7 +26,8 @@ import path from 'node:path'
 import os from 'node:os'
 import assert from 'node:assert/strict'
 import { Keypair } from '@stellar/stellar-sdk'
-import { RouteDockClient, FileSpendStore, RouteDockPolicyRejectedError } from '@routedock/routedock'
+import { RouteDockClient, RouteDockPolicyRejectedError } from '@routedock/routedock'
+import { FileSpendStore } from '@routedock/routedock/node'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

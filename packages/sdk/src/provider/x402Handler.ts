@@ -226,10 +226,12 @@ export function createX402Handler(opts: X402HandlerOptions): RequestHandler {
           requirements,
         )
         if (!verifyResult.isValid) {
-          res.status(401).json({
-            error: 'Payment verification failed',
-            reason: (verifyResult as { invalidReason?: string }).invalidReason,
-          })
+          // Same shape as a settlement failure: 402 + fresh requirements + reason,
+          // so a protocol-following client can retry or report why it was refused.
+          await respondPaymentRequired(
+            'Payment verification failed',
+            (verifyResult as { invalidReason?: string }).invalidReason,
+          )
           return
         }
         const settleResult = await localFacilitator.settle(

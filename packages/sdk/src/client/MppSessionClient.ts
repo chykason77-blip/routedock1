@@ -7,6 +7,7 @@
  * @stellar/mpp library handles the 402 challenge-response cycle.
  */
 import { Keypair, Networks } from '@stellar/stellar-sdk'
+import type { rpc } from '@stellar/stellar-sdk'
 import { STELLAR_PUBNET, STELLAR_TESTNET } from '@stellar/mpp'
 import { stellar } from '@stellar/mpp/channel/client'
 import { Challenge } from 'mppx'
@@ -35,9 +36,48 @@ import {
 import { withRetry, type RetryPolicy } from '../internal/retry.js'
 import { consoleLogger, type RouteDockLogger } from '../internal/logger.js'
 import { usdcToStroops } from '../internal/usdc.js'
+import { bytesToHex, bytesToUtf8 } from '../internal/encoding.js'
 
 const MIN_REFUND_WAITING_PERIOD = 17_280
 const STREAM_CLEANUP_TIMEOUT_MS = 3_000
+
+/** Polling parameters for on-chain transaction confirmation. */
+export const TX_CONFIRM_INTERVAL_MS = 1_000
+export const TX_CONFIRM_TIMEOUT_MS = 30_000
+
+/**
+ * Polls Soroban RPC server.getTransaction until the transaction succeeds, fails, or times out.
+ * Returns the hash on SUCCESS, throws RouteDockDisputeError on FAILED or timeout.
+ */
+async function confirmTransaction(
+  server: Pick<rpc.Server, 'getTransaction'>,
+  hash: string,
+  label: string,
+  timeoutMs: number = TX_CONFIRM_TIMEOUT_MS,
+  intervalMs: number = TX_CONFIRM_INTERVAL_MS,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const txResponse = await server.getTransaction(hash)
+    const status = txResponse?.status
+    if (status === 'SUCCESS') {
+      return hash
+    }
+    if (status === 'FAILED') {
+      throw new RouteDockDisputeError(
+        `${label} transaction failed on-chain: status FAILED (resultXdr: ${txResponse.resultXdr.toXDR('base64')})`,
+      )
+    }
+    if (Date.now() >= deadline) {
+      break
+    }
+    const remaining = deadline - Date.now()
+    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, Math.max(1, remaining))))
+  }
+  throw new RouteDockDisputeError(
+    `${label} transaction confirmation timed out after ${timeoutMs}ms (hash: ${hash})`,
+  )
+}
 
 /** Internal listener shape: every event's payload, unioned. The public on()
  * signature narrows this per event through SessionEventPayloadMap. */
@@ -90,12 +130,12 @@ function defaultWebSocketFactory(
     if (typeof data === 'string') {
       handlers.onMessage(data)
     } else if (data instanceof ArrayBuffer) {
-      handlers.onMessage(Buffer.from(data).toString('utf8'))
+      handlers.onMessage(bytesToUtf8(new Uint8Array(data)))
     } else {
       // Blob or other binary — best-effort decode.
       void (data as Blob)
         .arrayBuffer()
-        .then((buffer) => handlers.onMessage(Buffer.from(buffer).toString('utf8')))
+        .then((buffer) => handlers.onMessage(bytesToUtf8(new Uint8Array(buffer))))
         .catch(() => {
           /* undecodable frame — dropped */
         })
@@ -626,7 +666,7 @@ export class MppSessionClient {
 
         let signature: Buffer
         try {
-          signature = commitmentKey.sign(Buffer.from(commitmentBytes))
+          signature = commitmentKey.sign(commitmentBytes)
         } catch (err) {
           throw new RouteDockSignatureError('Channel close commitment signing failed', {
             cause: err,
@@ -641,7 +681,7 @@ export class MppSessionClient {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 amount: currentCumulative.toString(),
-                signature: Buffer.from(signature).toString('hex'),
+                signature: bytesToHex(signature),
               }),
             })
           } catch (err) {
@@ -691,7 +731,11 @@ export class MppSessionClient {
         }
       },
 
-      async requestRefund(): Promise<string> {
+      /**
+       * Request refund from the channel contract (initiates dispute).
+       * Returns the transaction hash only after on-chain confirmation (SUCCESS).
+       */
+      async requestRefund(options?: { timeoutMs?: number; intervalMs?: number }): Promise<string> {
         const { rpc: rpcMod, Contract, TransactionBuilder, BASE_FEE } = await import('@stellar/stellar-sdk')
         const rpcUrl = network === 'testnet'
           ? 'https://soroban-testnet.stellar.org'
@@ -720,18 +764,31 @@ export class MppSessionClient {
             const errDetail = (result as any).errorResult ? JSON.stringify((result as any).errorResult) : 'status ERROR'
             throw new RouteDockDisputeError(`Refund request transaction failed: ${errDetail}`)
           }
+          if (result.status === 'TRY_AGAIN_LATER') {
+            throw new RouteDockDisputeError('Refund request transaction rejected with TRY_AGAIN_LATER: transaction not queued')
+          }
           if (!result.hash) {
             throw new RouteDockDisputeError('Refund request transaction not sent')
           }
 
-          return result.hash
+          return await confirmTransaction(
+            server,
+            result.hash,
+            'Refund request',
+            options?.timeoutMs,
+            options?.intervalMs,
+          )
         } catch (err) {
           if (err instanceof RouteDockDisputeError) throw err
           throw new RouteDockDisputeError(`Failed to request refund: ${err instanceof Error ? err.message : String(err)}`)
         }
       },
 
-      async settleWithLatestVoucher(): Promise<string> {
+      /**
+       * Server-side counter-mechanism to settle with latest voucher before refund window expires.
+       * Returns the transaction hash only after on-chain confirmation (SUCCESS).
+       */
+      async settleWithLatestVoucher(options?: { timeoutMs?: number; intervalMs?: number }): Promise<string> {
         const { rpc: rpcMod, Contract, nativeToScVal, TransactionBuilder, BASE_FEE } = await import('@stellar/stellar-sdk')
         const rpcUrl = network === 'testnet'
           ? 'https://soroban-testnet.stellar.org'
@@ -753,7 +810,7 @@ export class MppSessionClient {
           const commitmentBytes = (simResult as any).result?.retval?.bytes()
           if (!commitmentBytes) throw new RouteDockDisputeError('prepare_commitment returned no bytes')
 
-          const signature = commitmentKey.sign(Buffer.from(commitmentBytes))
+          const signature = commitmentKey.sign(commitmentBytes)
 
           const settleAccount = await server.getAccount(agentPublicKey)
           const settleTx = new TransactionBuilder(settleAccount, { fee: BASE_FEE, networkPassphrase: passphrase })
@@ -761,7 +818,7 @@ export class MppSessionClient {
               contract.call(
                 'settle_with_signature',
                 nativeToScVal(currentCumulative, { type: 'i128' }),
-                nativeToScVal(Buffer.from(signature)),
+                nativeToScVal(signature),
               ),
             )
             .setTimeout(30)
@@ -774,11 +831,20 @@ export class MppSessionClient {
             const errDetail = (settleResult as any).errorResult ? JSON.stringify((settleResult as any).errorResult) : 'status ERROR'
             throw new RouteDockDisputeError(`Settlement transaction failed: ${errDetail}`)
           }
+          if (settleResult.status === 'TRY_AGAIN_LATER') {
+            throw new RouteDockDisputeError('Settlement transaction rejected with TRY_AGAIN_LATER: transaction not queued')
+          }
           if (!settleResult.hash) {
             throw new RouteDockDisputeError('Settlement transaction not sent')
           }
 
-          return settleResult.hash
+          return await confirmTransaction(
+            server,
+            settleResult.hash,
+            'Settlement',
+            options?.timeoutMs,
+            options?.intervalMs,
+          )
         } catch (err) {
           if (err instanceof RouteDockDisputeError) throw err
           throw new RouteDockDisputeError(`Failed to settle with latest voucher: ${err instanceof Error ? err.message : String(err)}`)

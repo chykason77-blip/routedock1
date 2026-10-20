@@ -44,7 +44,7 @@ jobs:
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: 'pnpm'
@@ -59,10 +59,40 @@ jobs:
         run: pnpm --filter @routedock/routedock build
 
       - name: Start Providers
+        id: provider-tests
         env:
           NODE_ENV: test
         run: |
           set -euo pipefail
+          umask 077
+          provider_pids=()
+          cleanup() {
+            status=$?
+            trap - EXIT INT TERM
+            set +e
+            # Stop the whole pnpm/wrangler process groups before reading logs.
+            for pid in "${provider_pids[@]}"; do
+              kill -- "-$pid" 2>/dev/null
+            done
+            if (( ${#provider_pids[@]} )); then
+              sleep 1
+            fi
+            for pid in "${provider_pids[@]}"; do
+              kill -KILL -- "-$pid" 2>/dev/null
+              wait "$pid" 2>/dev/null
+            done
+            if (( status != 0 )); then
+              node scripts/e2e-provider-logs.mjs
+            fi
+            rm -f "$RUNNER_TEMP/provider-a.log" "$RUNNER_TEMP/provider-b.log"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          : > "$RUNNER_TEMP/provider-a.log"
+          : > "$RUNNER_TEMP/provider-b.log"
+
           STELLAR_PAYEE_ADDRESS=$(pnpm --filter @routedock/routedock exec node --input-type=module -e \
             "import { Keypair } from '@stellar/stellar-sdk'; console.log(Keypair.fromSecret(process.env.E2E_PAYEE_SECRET).publicKey())")
           COMMITMENT_PUBLIC_KEY=$(COMMITMENT_SECRET="$COMMITMENT_SECRET" pnpm --filter @routedock/routedock exec node --input-type=module -e \
@@ -72,11 +102,10 @@ jobs:
           export COMMITMENT_PUBLIC_KEY
           export CHANNEL_CONTRACT_ID=CCK4XOW3YKQUEZFONUTINKMSNW7SNMRQZURME5U3UP7E6WNGK7UHUCAH
 
-          pnpm --filter provider-a exec wrangler dev --port 8801 --inspector-port 9231 --var "STELLAR_PAYEE_SECRET:$STELLAR_PAYEE_SECRET" --var "STELLAR_PAYEE_ADDRESS:$STELLAR_PAYEE_ADDRESS" >"$RUNNER_TEMP/provider-a.log" 2>&1 &
-          PROVIDER_A_PID=$!
-          pnpm --filter provider-b exec wrangler dev --port 8802 --inspector-port 9232 --var "STELLAR_PAYEE_SECRET:$STELLAR_PAYEE_SECRET" --var "STELLAR_PAYEE_ADDRESS:$STELLAR_PAYEE_ADDRESS" --var "COMMITMENT_PUBLIC_KEY:$COMMITMENT_PUBLIC_KEY" --var "CHANNEL_CONTRACT_ID:$CHANNEL_CONTRACT_ID" >"$RUNNER_TEMP/provider-b.log" 2>&1 &
-          PROVIDER_B_PID=$!
-          trap 'kill "$PROVIDER_A_PID" "$PROVIDER_B_PID" 2>/dev/null || true' EXIT
+          setsid pnpm --filter provider-a exec wrangler dev --port 8801 --inspector-port 9231 --var "STELLAR_PAYEE_SECRET:$STELLAR_PAYEE_SECRET" --var "STELLAR_PAYEE_ADDRESS:$STELLAR_PAYEE_ADDRESS" >"$RUNNER_TEMP/provider-a.log" 2>&1 &
+          provider_pids+=("$!")
+          setsid pnpm --filter provider-b exec wrangler dev --port 8802 --inspector-port 9232 --var "STELLAR_PAYEE_SECRET:$STELLAR_PAYEE_SECRET" --var "STELLAR_PAYEE_ADDRESS:$STELLAR_PAYEE_ADDRESS" --var "COMMITMENT_PUBLIC_KEY:$COMMITMENT_PUBLIC_KEY" --var "CHANNEL_CONTRACT_ID:$CHANNEL_CONTRACT_ID" >"$RUNNER_TEMP/provider-b.log" 2>&1 &
+          provider_pids+=("$!")
 
           for attempt in $(seq 1 60); do
             a_ready=false
@@ -87,7 +116,7 @@ jobs:
               break
             fi
             if [[ "$attempt" == 60 ]]; then
-              cat "$RUNNER_TEMP/provider-a.log" "$RUNNER_TEMP/provider-b.log"
+              echo 'Providers did not become healthy within 120 seconds.' >&2
               exit 1
             fi
             sleep 2
@@ -98,6 +127,18 @@ jobs:
           curl --fail --silent http://localhost:8802/.well-known/routedock.json \
             | jq -e '.signature | type == "string" and length > 0' >/dev/null
           pnpm --filter agent test:e2e
+
+      - name: Upload provider failure logs
+        if: ${{ failure() && steps.provider-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-provider-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          # Only sanitized copies may leave the runner.
+          path: |
+            ${{ runner.temp }}/e2e-provider-logs/provider-a.log
+            ${{ runner.temp }}/e2e-provider-logs/provider-b.log
+          retention-days: 3
+          if-no-files-found: warn
 
   e2e-skipped:
     name: E2E not run — AGENT_SECRET unavailable

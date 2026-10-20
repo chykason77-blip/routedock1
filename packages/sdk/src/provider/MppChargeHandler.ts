@@ -6,6 +6,7 @@ import { resolvePayee } from '../internal/payee.js'
 import { extractPayerAddress } from './payer.js'
 import type { SessionStore } from '../store/SessionStore.js'
 import { resolveLogger, type RouteDockLogger } from '../internal/logger.js'
+import { base64ToUtf8 } from '../internal/encoding.js'
 import {
   InMemorySeenTxStore,
   paymentIdempotencyKey,
@@ -92,7 +93,7 @@ export function createMppChargeHandler(opts: MppChargeHandlerOptions): RequestHa
             .find((p) => p.trim().startsWith('credential='))
           if (credPart) {
             const b64 = credPart.split('=').slice(1).join('=').replace(/^"|"$/g, '')
-            const credJson = Buffer.from(b64, 'base64').toString('utf8')
+            const credJson = base64ToUtf8(b64)
             const cred = JSON.parse(credJson) as {
               sender?: string
               payload?: { sender?: string; from?: string }
@@ -175,7 +176,7 @@ export function createMppChargeHandler(opts: MppChargeHandlerOptions): RequestHa
       if (receiptHeader) {
         try {
           const parsed = JSON.parse(
-            Buffer.from(receiptHeader, 'base64').toString('utf8'),
+            base64ToUtf8(receiptHeader),
           ) as { reference?: string }
           reference = parsed.reference
         } catch {

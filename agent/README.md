@@ -34,7 +34,8 @@ The agent executes the full autonomous payment workflow:
 > Always pass a durable `SpendStore` (such as `FileSpendStore` pointing to disk, Redis, or SQL) via `spendStore` in `RouteDockClientConfig`:
 >
 > ```typescript
-> import { RouteDockClient, FileSpendStore } from '@routedock/routedock'
+> import { RouteDockClient } from '@routedock/routedock'
+> import { FileSpendStore } from '@routedock/routedock/node' // Node-only (node:fs)
 >
 > const client = new RouteDockClient({
 >   wallet: keypair,

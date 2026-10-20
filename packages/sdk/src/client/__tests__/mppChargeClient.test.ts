@@ -11,6 +11,7 @@ import { Keypair } from '@stellar/stellar-sdk'
 import type { RouteDockManifest } from '../../types.js'
 import {
   RouteDockManifestError,
+  RouteDockPaymentRejectedError,
   RouteDockSignatureError,
   RouteDockNetworkError,
   RouteDockFacilitatorError,
@@ -29,6 +30,8 @@ type ChallengeRequest = {
 interface MppxScript {
   /** HTTP status returned by mppx.fetch */
   fetchStatus?: number
+  /** JSON body of a non-200 response (default `{ error: 'fail' }`) */
+  rejectBody?: unknown
   /** If true, mppx.fetch rejects with a network error */
   fetchRejects?: boolean
   /** If true, mppx.fetch returns a 200 non-JSON response */
@@ -99,13 +102,13 @@ const fakeMppx = {
       })
     }
     const status = mppxScript.fetchStatus ?? 200
-    return status === 200 ? response({ ok: true }, 200) : response({ error: 'fail' }, status)
+    return status === 200 ? response({ ok: true }, 200) : response(mppxScript.rejectBody ?? { error: 'fail' }, status)
   },
   rawFetch: async (_url: string, init?: RequestInit): Promise<Response> => {
     const headers = (init?.headers ?? {}) as Record<string, string>
     rawFetchAuthHeaders.push(headers['Authorization'])
     const status = mppxScript.rawFetchStatus ?? mppxScript.fetchStatus ?? 200
-    return status === 200 ? response({ ok: true }, 200) : response({ error: 'fail' }, status)
+    return status === 200 ? response({ ok: true }, 200) : response(mppxScript.rejectBody ?? { error: 'fail' }, status)
   },
 }
 
@@ -297,13 +300,52 @@ describe('MppChargeClient — HTTP errors', () => {
     )
   })
 
-  it('throws RouteDockManifestError for 4xx status (non-retryable)', async () => {
+  it('throws RouteDockPaymentRejectedError for 4xx status (non-retryable), not a manifest error', async () => {
     mppxScript = { fetchStatus: 400 }
     const client = new MppChargeClient(Keypair.random(), 'testnet')
     await assert.rejects(
       () => client.pay('https://provider.test/price', buildManifest()),
       (err: unknown) =>
-        err instanceof Error && /MPP charge failed: HTTP 400/.test(err.message),
+        err instanceof RouteDockPaymentRejectedError &&
+        !(err instanceof RouteDockManifestError) &&
+        err.status === 400 &&
+        err.retryable === false &&
+        /MPP charge failed: HTTP 400/.test(err.message),
+    )
+  })
+
+  for (const status of [401, 402]) {
+    it(`surfaces the provider's reason when the paid request is rejected with ${status} (#558)`, async () => {
+      mppxScript = {
+        fetchStatus: status,
+        rejectBody: { error: 'Payment verification failed', reason: 'credential_expired' },
+      }
+      const client = new MppChargeClient(Keypair.random(), 'testnet')
+      await assert.rejects(
+        () => client.pay('https://provider.test/price', buildManifest()),
+        (err: unknown) => {
+          assert.ok(err instanceof RouteDockPaymentRejectedError, String(err))
+          assert.equal(err.code, 'PAYMENT_REJECTED')
+          assert.equal(err.status, status)
+          assert.equal(err.reason, 'credential_expired')
+          assert.equal(err.providerError, 'Payment verification failed')
+          assert.match(err.message, new RegExp(`MPP charge failed: HTTP ${status}`))
+          assert.match(err.message, /credential_expired/)
+          return true
+        },
+      )
+    })
+  }
+
+  it('keeps the status-only message when the rejection body has no reason', async () => {
+    mppxScript = { fetchStatus: 401, rejectBody: [] }
+    const client = new MppChargeClient(Keypair.random(), 'testnet')
+    await assert.rejects(
+      () => client.pay('https://provider.test/price', buildManifest()),
+      (err: unknown) =>
+        err instanceof RouteDockPaymentRejectedError &&
+        err.reason === undefined &&
+        err.message === 'MPP charge failed: HTTP 401',
     )
   })
 
@@ -382,7 +424,10 @@ describe('MppChargeClient — signs once per pay()', () => {
     })
     await assert.rejects(
       () => client.pay('https://provider.test/price', buildManifest()),
-      (err: unknown) => err instanceof Error && /MPP charge failed: HTTP 402/.test(err.message),
+      (err: unknown) =>
+        err instanceof RouteDockPaymentRejectedError &&
+        err.status === 402 &&
+        /MPP charge failed: HTTP 402/.test(err.message),
     )
     assert.equal(createCredentialCalls, 1)
     assert.equal(rawFetchAuthHeaders.length, 1)

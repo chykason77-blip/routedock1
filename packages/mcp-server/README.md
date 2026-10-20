@@ -56,7 +56,9 @@ Pay for a single data request from a RouteDock provider. Automatically selects t
 
 **Parameters:**
 - `url` (required): Full URL of the provider endpoint
-- `max_amount` (required): Maximum USDC amount to pay
+- `max_amount` (required): Maximum USDC amount to pay, as a decimal string such as `"0.01"`: a positive
+  number with at most 7 decimal places and no currency symbol. Anything else (missing, `"$0.01"`, `"0"`,
+  a JSON number) is rejected before the provider is contacted.
 - `preferred_mode` (optional): Preferred payment mode (`x402`, `mpp-charge`, `mpp-session`)
 
 **Returns:** Payment result with mode, amount, transaction hash, and response data
@@ -69,10 +71,15 @@ check against the provider's `min_deposit`, not a fund transfer. Pass the return
 `stream_session` and `close_session` — the channel's collateral cannot be settled otherwise.
 
 **Parameters:**
-- `url` (required): Base URL of the provider
+- `url` (required): The provider's streaming endpoint, e.g. `https://api-b.routedock.xyz/stream/orderbook`.
+  Vouchers and the closing `DELETE` are sent to this exact URL. A bare origin such as
+  `https://api-b.routedock.xyz` is also accepted: the server reads the provider's
+  `/.well-known/routedock.json` and uses `endpoints.stream`, or the only endpoint if there is just one.
+  The endpoint must be `GET` and on the same origin. If none qualifies, the call fails without opening
+  a session and lists the manifest's endpoints so you can retry with a full URL.
 - `initial_deposit` (optional): Amount in USDC you intend the channel to be funded with
 
-**Returns:** `channel_id` and open transaction hash
+**Returns:** `channel_id`, open transaction hash, and `endpoint_url` (the URL the session streams from)
 
 ### stream_session
 
@@ -145,7 +152,7 @@ Once configured, you can ask Claude to:
 > "Check my Stellar balance"
 > "List providers that offer price data"
 > "Pay for data from https://api-a.routedock.xyz/price with a max of 0.01 USDC"
-> "Open a session with https://api-b.routedock.xyz for streaming orderbook data"
+> "Open a session with https://api-b.routedock.xyz/stream/orderbook for streaming orderbook data"
 > "Pull the next few messages from that session"
 > "Close the session and settle the channel"
 

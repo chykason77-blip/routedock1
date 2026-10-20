@@ -34,12 +34,15 @@ let settleResult: SettleResponse = {
   errorReason: 'settle_exact_stellar_transaction_submission_failed',
 }
 let settleCalls = 0
+let verifyResult: { isValid: boolean; invalidReason?: string } = { isValid: true }
+let verifyCalls = 0
 
 mock.module('@x402/stellar/exact/facilitator', {
   namedExports: {
     ExactStellarScheme: class {
       async verify() {
-        return { isValid: true }
+        verifyCalls++
+        return verifyResult
       }
       async settle() {
         settleCalls++
@@ -146,6 +149,8 @@ function paidRequest(app: Hono) {
 
 beforeEach(() => {
   settleCalls = 0
+  verifyCalls = 0
+  verifyResult = { isValid: true }
   settleResult = {
     success: false,
     transaction: '',
@@ -197,6 +202,41 @@ describe('routedockHono x402 — settle returns success: false (local facilitato
     await new Promise((r) => setImmediate(r))
     assert.equal(h.settled.length, 1)
     assert.equal(h.settled[0]?.[0], 'TX_HASH_1')
+  })
+})
+
+describe('routedockHono x402 — verify fails (local facilitator, #558)', () => {
+  it('returns 402 with requirements and the invalid reason, never 401', async () => {
+    verifyResult = { isValid: false, invalidReason: 'invalid_exact_stellar_payload_wrong_amount' }
+    const h = makeHarness()
+
+    const res = await paidRequest(h.app)
+
+    assert.equal(verifyCalls, 1)
+    assert.equal(settleCalls, 0, 'must not settle a payment that failed verification')
+    assert.equal(res.status, 402)
+    assert.ok(res.headers.get('x-payment-requirements'), 'carries fresh requirements')
+    assert.equal(res.headers.get('x-payment-response'), null)
+    const body = (await res.json()) as { error: string; reason?: string }
+    assert.equal(body.error, 'Payment verification failed')
+    assert.equal(body.reason, 'invalid_exact_stellar_payload_wrong_amount')
+
+    assert.equal(h.downstream.called, false)
+    assert.deepEqual(h.seenSet, [])
+    assert.deepEqual(h.settled, [])
+  })
+
+  it('omits reason when the facilitator gives none', async () => {
+    verifyResult = { isValid: false }
+    const h = makeHarness()
+
+    const res = await paidRequest(h.app)
+
+    assert.equal(res.status, 402)
+    assert.ok(res.headers.get('x-payment-requirements'))
+    const body = (await res.json()) as { error: string; reason?: string }
+    assert.equal(body.error, 'Payment verification failed')
+    assert.equal('reason' in body, false)
   })
 })
 

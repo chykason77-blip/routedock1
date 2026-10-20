@@ -10,6 +10,7 @@
     "version": "changeset version",
     "release": "pnpm run release:build && changeset publish",
     "release:build": "pnpm --filter @routedock/nulth-sdk build && pnpm --filter @routedock/routedock build && pnpm --filter @routedock/mcp-server build",
+    "check:runtime": "node scripts/check-runtime-neutral.mjs",
     "verify": "bash scripts/verify.sh",
     "prepare": "[ -n \"${CI:-}\" ] || git config core.hooksPath .githooks 2>/dev/null || true"
   },

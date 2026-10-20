@@ -318,6 +318,9 @@ importers:
 
   packages/nulth-sdk:
     dependencies:
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
       '@stellar/stellar-sdk':
         specifier: ^14.6.1
         version: 14.6.1
@@ -340,6 +343,9 @@ importers:
       '@cfworker/json-schema':
         specifier: ^4.0.0
         version: 4.1.1
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
       '@routedock/nulth-sdk':
         specifier: workspace:*
         version: link:../nulth-sdk

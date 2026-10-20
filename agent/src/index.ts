@@ -21,7 +21,8 @@ import path from 'node:path'
 import os from 'node:os'
 import { Keypair } from '@stellar/stellar-sdk'
 import { Horizon } from '@stellar/stellar-sdk'
-import { RouteDockClient, FileSpendStore, RouteDockPolicyRejectError, RouteDockTrustlineError } from '@routedock/routedock'
+import { RouteDockClient, RouteDockPolicyRejectError, RouteDockTrustlineError } from '@routedock/routedock'
+import { FileSpendStore } from '@routedock/routedock/node'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

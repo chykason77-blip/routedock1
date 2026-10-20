@@ -4,7 +4,8 @@
  * @routedock/nulth-sdk is a workspace dependency, so usdcToStroops
  * is imported from @routedock/nulth-sdk via ../internal/usdc.js.
  */
-import { createHash } from 'node:crypto'
+import { base64ToBytes, bytesToBase64, bytesToUtf8, utf8ToBytes } from '../internal/encoding.js'
+import { sha256Hex as sha256HexOf, sha512 } from '../internal/hash.js'
 import { Address, rpc, hash, scValToNative, xdr } from '@stellar/stellar-sdk'
 import type { ClientStellarSigner } from '@x402/stellar'
 import type { SignAuthEntry } from '@stellar/stellar-sdk/contract'
@@ -76,9 +77,8 @@ export class NulthPolicyError extends Error {
 // Inlined proof utilities (from @routedock/nulth-sdk/proof)
 // ---------------------------------------------------------------------------
 
-function sha256Hex(data: Buffer | string): string {
-  const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
-  return createHash('sha256').update(buf).digest('hex')
+function sha256Hex(data: Uint8Array | string): string {
+  return sha256HexOf(data)
 }
 
 function commitDailyCap(dailyCapStroops: bigint, witnessSecret: string): string {
@@ -99,7 +99,7 @@ function dayBucketFromLedger(ledgerSequence: number): number {
 }
 
 function authDigestFromEntry(authEntryBase64: string): string {
-  const entryHash = hash(Buffer.from(authEntryBase64, 'base64'))
+  const entryHash = hash(base64ToBytes(authEntryBase64) as Parameters<typeof hash>[0])
   return sha256Hex(entryHash)
 }
 
@@ -194,12 +194,12 @@ function assertAuthEntryMatchesContext(
 }
 
 function insecureMockProof(preimage: string): string {
-  return createHash('sha512').update(`nulth:${preimage}`).digest('base64')
+  return bytesToBase64(sha512(`nulth:${preimage}`))
 }
 
 function encodeAuthSignature(proof: NulthProof): string {
   const payload: NulthAuthSignature = { nulth: 'zk-v1', proof }
-  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
+  return bytesToBase64(utf8ToBytes(JSON.stringify(payload)))
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +446,7 @@ export async function prepareNulthSigner(
 export type { VaultMode }
 
 export function decodeAuthSignature(encoded: string): NulthAuthSignature {
-  const raw = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as unknown
+  const raw = JSON.parse(bytesToUtf8(base64ToBytes(encoded))) as unknown
   if (typeof raw !== 'object' || raw === null || (raw as { nulth?: string }).nulth !== 'zk-v1') {
     throw new Error('Invalid Nulth ZK auth signature')
   }
