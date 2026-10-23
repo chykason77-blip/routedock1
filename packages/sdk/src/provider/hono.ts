@@ -37,7 +37,7 @@ import {
 } from './SeenTxStore.js'
 import { resolveAssetContract } from '../internal/assetUtils.js'
 import { RouteDockManifestError } from '../errors.js'
-import { readSettleResult } from './settleResult.js'
+import { readSettleResult } from '../internal/settleResult.js'
 import { recordSessionSettlement } from './internal/vaultSettlement.js'
 import {
   resolveVaultSettlementConfig,
