@@ -1,17 +1,21 @@
-# @routedock/sdk
+# @routedock/routedock
 
 Unified payment execution layer for autonomous agents on Stellar. One SDK for x402, MPP charge, and MPP session — mode selected automatically from the provider's `routedock.json` manifest.
+
+## Requirements
+
+Node.js **22 or newer**, matching the supported runtime of all RouteDock npm packages.
 
 ## Install
 
 ```bash
-npm install @routedock/sdk
+npm install @routedock/routedock
 ```
 
 ## Agent Usage
 
 ```ts
-import { RouteDockClient } from '@routedock/sdk/client'
+import { RouteDockClient } from '@routedock/routedock/client'
 import { Keypair } from '@stellar/stellar-sdk'
 
 const client = new RouteDockClient({
@@ -53,7 +57,7 @@ production, inject a persistent implementation so a crash or restart can't reset
 the accumulator and bypass the cap:
 
 ```ts
-import { RouteDockClient, type SpendStore, type DailySpend } from '@routedock/sdk/client'
+import { RouteDockClient, type SpendStore, type DailySpend } from '@routedock/routedock/client'
 
 const redisSpendStore: SpendStore = {
   async read(): Promise<DailySpend | null> {
@@ -90,7 +94,7 @@ const client = new RouteDockClient({
 
 ```ts
 import express from 'express'
-import { routedock } from '@routedock/sdk/provider'
+import { routedock } from '@routedock/routedock/provider'
 
 const app = express()
 
@@ -493,10 +497,10 @@ Third-party dependencies are outside this guarantee: for example `mppx` imports
 >
 > For production or mainnet, keep RouteDockClient on the server (a route handler or server action) and read the key from a non-public variable such as `AGENT_SECRET`, as the Agent Usage section does.
 
-`@routedock/sdk/react` provides hooks for client construction, payments, sessions, and live tx log subscription. Wrap your app with `RouteDockProvider`:
+`@routedock/routedock/react` provides hooks for client construction, payments, sessions, and live tx log subscription. Wrap your app with `RouteDockProvider`:
 
 ```tsx
-import { RouteDockProvider, useRouteDockClient } from '@routedock/sdk/react'
+import { RouteDockProvider, useRouteDockClient } from '@routedock/routedock/react'
 import { createClient } from '@supabase/supabase-js'
 
 // Dedicated throwaway testnet key. Never a funded or mainnet key.
@@ -524,7 +528,7 @@ function App({ children }: { children: React.ReactNode }) {
 
 ```ts
 // app/api/price/route.ts (runs on the server only)
-import { RouteDockClient } from '@routedock/sdk/client'
+import { RouteDockClient } from '@routedock/routedock/client'
 
 const client = new RouteDockClient({
   wallet: process.env.AGENT_SECRET!,
@@ -541,7 +545,7 @@ export async function POST() {
 ### `usePay(url, options?)`
 
 ```tsx
-import { usePay } from '@routedock/sdk/react'
+import { usePay } from '@routedock/routedock/react'
 
 function PriceButton() {
   const { pay, result, loading, error } = usePay('https://provider.example.com/price')
@@ -558,7 +562,7 @@ function PriceButton() {
 
 ```tsx
 import { useEffect } from 'react'
-import { useSession } from '@routedock/sdk/react'
+import { useSession } from '@routedock/routedock/react'
 
 function StreamingFeed() {
   const { open, close, status, vouchers, cumulative } = useSession(
@@ -579,7 +583,7 @@ The hook automatically fires `session.close()` in the background on unmount when
 ### `useTxLog(filter?)`
 
 ```tsx
-import { useTxLog } from '@routedock/sdk/react'
+import { useTxLog } from '@routedock/routedock/react'
 
 function ActivityFeed({ channelId }: { channelId: string }) {
   const txLog = useTxLog({ channelId, limit: 25 })
@@ -616,7 +620,7 @@ import {
   RouteDockManifestError,
   RouteDockPaymentRejectedError,
   RouteDockPolicyRejectError,
-} from '@routedock/sdk/client'
+} from '@routedock/routedock/client'
 
 const client = new RouteDockClient({
   wallet: process.env.AGENT_SECRET!,

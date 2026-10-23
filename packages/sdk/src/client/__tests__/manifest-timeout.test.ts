@@ -9,7 +9,7 @@
  * The full integration (fetchManifest → RouteDockManifestTimeoutError on hang) is
  * tested via `pnpm test` which resolves ajv through the pnpm virtual store.
  *
- * Run with: pnpm --filter @routedock/sdk test
+ * Run with: pnpm --filter @routedock/routedock test
  */
 
 import * as http from 'node:http'

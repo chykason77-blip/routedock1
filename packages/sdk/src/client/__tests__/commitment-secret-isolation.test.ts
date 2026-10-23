@@ -13,7 +13,7 @@
  *   - dispose() removes the WeakMap entry
  *   - Double dispose() is safe (idempotent)
  *
- * Run with: pnpm --filter @routedock/sdk test
+ * Run with: pnpm --filter @routedock/routedock test
  */
 
 import assert from 'node:assert/strict'
