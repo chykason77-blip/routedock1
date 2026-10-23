@@ -7,7 +7,7 @@ Last updated: 2026-04-08
 | # | Item | Status | Notes |
 |---|---|---|---|
 | 1 | Public GitHub repo with clean `README.md` | ⚠️ Needs user action | README written. Push repo to GitHub, make public. |
-| 2 | `@routedock/sdk` published to npm | ⚠️ Needs user action | SDK built, checklist at `packages/sdk/PUBLISH_CHECKLIST.md` |
+| 2 | `@routedock/routedock` published to npm | ⚠️ Needs user action | SDK built, checklist at `packages/sdk/PUBLISH_CHECKLIST.md` |
 | 3 | Provider A live on Railway with `/.well-known/routedock.json` | ⚠️ Needs user action | Code complete. Deploy per `docs/DEPLOY_RAILWAY.md` |
 | 4 | Provider B live on Railway with `/.well-known/routedock.json` | ⚠️ Needs user action | Code complete. Deploy per `docs/DEPLOY_RAILWAY.md` |
 | 5 | Agent vault contract deployed to Stellar testnet | ✅ Complete | `CAX5IDLC2XHGQSEA2YN3LPLZ7EXLMRXYX3HFJGKFXS6B7OQXBKWO44LT` |
@@ -75,7 +75,7 @@ After agent run, paste hashes from `agent/RUN_RESULTS.md` into the "Live Testnet
 5. Paste 4 tx hashes into `README.md`
 6. Deploy dashboard to Vercel (set `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_STELLAR_EXPERT_URL=https://stellar.expert/explorer/testnet`, `NEXT_PUBLIC_PROVIDER_A_URL`, `NEXT_PUBLIC_PROVIDER_B_URL`)
 7. Enable Realtime on `sessions` and `tx_log` tables in Supabase dashboard
-8. Publish `@routedock/sdk` (follow `packages/sdk/PUBLISH_CHECKLIST.md`)
+8. Publish `@routedock/routedock` (follow `packages/sdk/PUBLISH_CHECKLIST.md`)
 9. Record demo video (follow `docs/DEMO_SCRIPT.md`)
 10. Push repo to GitHub, make public, update README with live URLs
 11. Submit to DoraHacks

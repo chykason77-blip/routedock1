@@ -10,11 +10,11 @@ The result: every agent team hardcodes payment logic per endpoint. If the endpoi
 
 ## What RouteDock Is
 
-RouteDock is one npm package (`@routedock/sdk`) that wraps all three Stellar payment modes behind a single function call. The agent calls `client.pay(url)`. The SDK reads the provider's manifest, selects the payment mode, and executes the full lifecycle — including channel open, off-chain voucher signing, and on-chain settlement.
+RouteDock is one npm package (`@routedock/routedock`) that wraps all three Stellar payment modes behind a single function call. The agent calls `client.pay(url)`. The SDK reads the provider's manifest, selects the payment mode, and executes the full lifecycle — including channel open, off-chain voucher signing, and on-chain settlement.
 
 Three components ship together:
 
-1. **`@routedock/sdk`** — client and provider libraries. The client handles mode selection and payment execution. The provider middleware handles verification and settlement for all three modes via one Express middleware.
+1. **`@routedock/routedock`** — client and provider libraries. The client handles mode selection and payment execution. The provider middleware handles verification and settlement for all three modes via one Express middleware.
 
 2. **`routedock.json`** — a discovery manifest served at `/.well-known/routedock.json` on every provider. Declares supported modes, pricing, asset, network, and endpoints. Validated against a JSON Schema at startup. Indexed with trigram search in Supabase so agents can query by capability ("find me a streaming price feed") without exact keyword matching.
 
@@ -167,7 +167,7 @@ The landing page at `/` shows the SDK pitch: code block, three-mode breakdown, l
 Monorepo structure:
 ```
 routedock/
-├── packages/sdk/        # @routedock/sdk — npm package
+├── packages/sdk/        # @routedock/routedock — npm package
 ├── apps/web/            # Next.js dashboard + landing
 ├── apps/provider-a/     # Price endpoint (x402 + MPP charge)
 ├── apps/provider-b/     # Orderbook endpoint (MPP session)

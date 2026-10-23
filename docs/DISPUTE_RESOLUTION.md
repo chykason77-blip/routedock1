@@ -39,7 +39,7 @@ The agent finishes consuming the stream and calls `session.close()`. The provide
 ### Recovery sequence
 
 ```ts
-import { RouteDockNetworkError, RouteDockChannelStateError } from '@routedock/sdk'
+import { RouteDockNetworkError, RouteDockChannelStateError } from '@routedock/routedock'
 
 try {
   const result = await session.close()
@@ -100,7 +100,7 @@ The agent calls `session.close()`. The provider's endpoint is reachable but retu
 ### Recovery sequence
 
 ```ts
-import { RouteDockChannelStateError } from '@routedock/sdk'
+import { RouteDockChannelStateError } from '@routedock/routedock'
 
 try {
   const result = await session.close()
@@ -208,7 +208,7 @@ The agent calls `session.close()` successfully — the `DELETE` request reaches 
 Always check on-chain state before taking any dispute action:
 
 ```ts
-import { RouteDockNetworkError } from '@routedock/sdk'
+import { RouteDockNetworkError } from '@routedock/routedock'
 
 try {
   const result = await session.close()

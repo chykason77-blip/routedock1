@@ -286,7 +286,7 @@ app.use('/price', routedock({
 
 ```ts
 import { Hono } from 'hono'
-import { routedockHono } from '@routedock/sdk/provider/hono'
+import { routedockHono } from '@routedock/routedock/provider/hono'
 
 const app = new Hono()
 

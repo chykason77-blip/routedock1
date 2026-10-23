@@ -1,12 +1,12 @@
 /**
- * Integration smoke tests for @routedock/sdk.
+ * Integration smoke tests for @routedock/routedock.
  *
  * These tests run against actual package imports to verify:
  *   1. x402 flow against a local mock server (402 → payment → 200)
  *   2. ModeRouter manifest fetch + validation
  *   3. SessionStore monotonic invariant rejection
  *
- * Run with: pnpm --filter @routedock/sdk test
+ * Run with: pnpm --filter @routedock/routedock test
  * No testnet RPC calls are made — all network calls are mocked via fetch interception.
  */
 
