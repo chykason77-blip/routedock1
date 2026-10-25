@@ -15,7 +15,8 @@ import {
   xdr,
 } from '@stellar/stellar-sdk'
 import { ExactStellarScheme, handleSimulationResult, type ClientStellarSigner } from '@x402/stellar'
-import type { PaymentRequirements } from '@x402/core/types'
+import { x402Client } from '@x402/core/client'
+import type { Network, PaymentRequirements, SchemeNetworkClient } from '@x402/core/types'
 import {
   createNulthSigner,
   createPolicyState,
@@ -32,6 +33,7 @@ import {
   type NulthSignAuthEntriesOptions,
   type NulthTransfer,
 } from '../nulthScheme.js'
+import { X402Client } from '../x402Client.js'
 import { prepareNulthSigner, type NulthVaultConfig } from '../NulthVault.js'
 import type { RouteDockManifest } from '../../types.js'
 
@@ -253,7 +255,7 @@ test('selectStellarScheme keeps ed25519 payers on the stock scheme', () => {
   assert.ok(selectStellarScheme(nulthSigner()) instanceof NulthStellarScheme)
 })
 
-test('X402Client.withSigner receives the proof scheme for the vault signer', async () => {
+test('X402Client.withSigner registers the proof scheme for stellar:testnet', async (t) => {
   const vault: NulthVaultConfig = {
     mode: 'nulth',
     nulthAccount: NULTH_ACCOUNT,
@@ -276,9 +278,36 @@ test('X402Client.withSigner receives the proof scheme for the vault signer', asy
   } as unknown as RouteDockManifest
 
   const { signer } = await prepareNulthSigner(vault, manifest, 'x402', 'testnet', LEDGER)
+
+  // Record what the client hands to the core, then register for real. Node's
+  // mock call records changed shape between 22 and 24, so the arguments are
+  // captured here instead of read back off the mock.
+  const registered: Array<[Network, SchemeNetworkClient]> = []
+  const register = x402Client.prototype.register
+  t.mock.method(
+    x402Client.prototype,
+    'register',
+    function (this: x402Client, network: Network, client: SchemeNetworkClient) {
+      registered.push([network, client])
+      return register.call(this, network, client)
+    },
+  )
+  new X402Client(Keypair.random().secret(), 'testnet').withSigner(signer)
+
+  const [ed25519Registration, nulthRegistration] = registered
+  assert.deepEqual(
+    registered.map(([network]) => network),
+    ['stellar:testnet', 'stellar:testnet'],
+    'withSigner rebuilds the client once per construction, on the same network',
+  )
   assert.ok(
-    selectStellarScheme(signer) instanceof NulthStellarScheme,
-    'the SDK-inlined signer carries the same marker as @routedock/nulth-sdk',
+    ed25519Registration?.[1] instanceof ExactStellarScheme,
+    'an ed25519 payer keeps the stock scheme',
+  )
+  assert.ok(
+    nulthRegistration?.[1] instanceof NulthStellarScheme,
+    `the vault signer must pay through the proof scheme, got ` +
+      `${nulthRegistration?.[1]?.constructor.name}`,
   )
 })
 
